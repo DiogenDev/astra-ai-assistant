@@ -1,0 +1,29 @@
+services:
+  ai-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-assistant-backend:latest
+    container_name: ai-assistant-backend
+    ports:
+      - "127.0.0.1:8765:8765"
+    env_file:
+      - .env
+    environment:
+      WORKSPACE_ROOT: /workspace
+      HOST: 0.0.0.0
+      PORT: "8765"
+    volumes:
+      # Mount the project the agent is allowed to read/write.
+      # Windows: use forward slashes, e.g. C:/Users/Merlin/Documents/my-project
+      - "${WORKSPACE_DIR:-.}:/workspace"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3

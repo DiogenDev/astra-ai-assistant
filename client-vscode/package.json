@@ -1,0 +1,143 @@
+{
+  "name": "ai-assistant-deepseek",
+  "displayName": "AI Assistant (DeepSeek)",
+  "description": "Copilot-style inline completions and an agentic chat panel powered by DeepSeek.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "The agent can read and modify workspace files, so the backend only starts in a trusted workspace."
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:aiAssistant.chatView",
+    "onCommand:aiAssistant.openChat",
+    "onCommand:aiAssistant.explainSelection",
+    "onCommand:aiAssistant.fixSelection",
+    "onCommand:aiAssistant.runInlineRequest"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "aiAssistant.openChat", "title": "AI: Open Chat" },
+      { "command": "aiAssistant.explainSelection", "title": "AI: Explain Selection" },
+      { "command": "aiAssistant.fixSelection", "title": "AI: Fix Selection" },
+      { "command": "aiAssistant.runInlineRequest", "title": "AI: Run Inline Request" }
+    ],
+    "keybindings": [
+      {
+        "command": "aiAssistant.runInlineRequest",
+        "key": "ctrl+alt+enter",
+        "when": "editorTextFocus"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiAssistant",
+          "title": "AI Assistant",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiAssistant": [
+        {
+          "id": "aiAssistant.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AI Assistant",
+      "properties": {
+        "aiAssistant.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to start the backend."
+        },
+        "aiAssistant.backendRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Folder containing the `backend` package and `.env`. Auto-detected in dev mode; set it when the extension is installed as a VSIX."
+        },
+        "aiAssistant.autoStartBackend": {
+          "type": "boolean",
+          "default": true,
+          "description": "Spawn the Python backend automatically. Disable when the backend runs in Docker."
+        },
+        "aiAssistant.apiUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "Backend base URL."
+        },
+        "aiAssistant.port": {
+          "type": "number",
+          "default": 8765,
+          "description": "Port for the spawned backend."
+        },
+        "aiAssistant.authToken": {
+          "type": "string",
+          "default": "",
+          "description": "Must match AUTH_TOKEN in .env. Leave empty to disable auth."
+        },
+        "aiAssistant.enableInline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable ghost-text inline completions."
+        },
+        "aiAssistant.inlineRequest.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline requests written in comments like `# ai: ...`."
+        },
+        "aiAssistant.inlineRequest.auto": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run inline requests automatically after the idle delay."
+        },
+        "aiAssistant.inlineRequest.idleDelayMs": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 500,
+          "description": "How long you must stop typing before an inline request runs (ms)."
+        },
+        "aiAssistant.reasoningEffort": {
+          "type": "string",
+          "enum": ["auto", "none", "low", "medium", "high"],
+          "enumDescriptions": [
+            "Use the provider default (thinking enabled).",
+            "Disable reasoning for the fastest answers.",
+            "Light reasoning.",
+            "Balanced reasoning.",
+            "Deep reasoning (slowest, most tokens)."
+          ],
+          "default": "medium",
+          "description": "Reasoning effort for chat and the agent."
+        },
+        "aiAssistant.model": {
+          "type": "string",
+          "default": "deepseek-flash",
+          "description": "Display label for the model (actual model is read from .env)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "package": "npx --yes @vscode/vsce package --no-dependencies --out ai-assistant.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
