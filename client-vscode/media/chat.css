@@ -1589,3 +1589,14 @@ select:hover {
     scroll-behavior: auto !important;
   }
 }
+
+.auto-badge {
+  font-size: 0.72em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 999px;
+  padding: 1px 7px;
+}

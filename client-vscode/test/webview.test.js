@@ -311,7 +311,7 @@ test('stop button is shown while streaming and sends stopChat', () => {
   assert.equal(doc.getElementById('stop').hidden, true);
 });
 
-test('file code blocks offer an Apply button', async () => {
+test('file blocks are auto-applied on done', async () => {
   const { doc, posted, send } = createWebview();
   send({
     type: 'delta',
@@ -322,9 +322,29 @@ test('file code blocks offer an Apply button', async () => {
 
   const block = doc.querySelector('.code-block');
   assert.ok(block);
-  const link = block.querySelector('.file-link');
-  assert.equal(link.textContent, 'src/app.py');
+  assert.equal(block.querySelector('.file-link').textContent, 'src/app.py');
+  assert.equal(block.querySelector('.apply-file'), null);
+  assert.ok(block.querySelector('.auto-badge'));
 
+  const message = posted.find((candidate) => candidate.type === 'applyFiles');
+  assert.ok(message);
+  assert.equal(message.files.length, 1);
+  assert.equal(message.files[0].path, 'src/app.py');
+  assert.equal(message.files[0].content, 'print(1)');
+});
+
+test('manual Apply buttons appear when autoApplyFiles is disabled', async () => {
+  const { doc, posted, send } = createWebview();
+  send({ type: 'settings', provider: 'auto', reasoningEffort: 'medium', autoApplyFiles: false });
+  send({
+    type: 'delta',
+    text: '```python file=src/app.py\nprint(1)\n```',
+  });
+  send({ type: 'done', stats: {} });
+  await tick();
+
+  const block = doc.querySelector('.code-block');
+  assert.ok(block);
   const apply = block.querySelector('.apply-file');
   assert.ok(apply);
   click(doc, apply);
@@ -333,6 +353,14 @@ test('file code blocks offer an Apply button', async () => {
   assert.ok(message);
   assert.equal(message.path, 'src/app.py');
   assert.equal(message.content, 'print(1)');
+  assert.equal(posted.filter((candidate) => candidate.type === 'applyFiles').length, 0);
+});
+
+test('appliedFiles message adds all file chips', () => {
+  const { doc, send } = createWebview();
+  send({ type: 'appliedFiles', paths: ['src/a.py', 'src/b.py'], overwrote: [], errors: [] });
+
+  assert.equal(doc.querySelectorAll('.files .file-link').length, 2);
 });
 
 test('applied file adds a files chip', () => {

@@ -1021,6 +1021,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           type: 'settings',
           reasoningEffort: cfg().get<string>('reasoningEffort', 'medium'),
           provider: cfg().get<string>('provider', 'auto'),
+          autoApplyFiles: cfg().get<boolean>('autoApplyFiles', true),
         });
         void this.refreshStats();
         break;
@@ -1089,6 +1090,18 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         if (applied) {
           this.post({ type: 'appliedFile', path: String(message.path ?? '') });
+        }
+        break;
+      }
+      case 'applyFiles': {
+        const result = await autoApplyWorkspaceFiles(message.files);
+        if (result.paths.length || result.errors.length) {
+          this.post({
+            type: 'appliedFiles',
+            paths: result.paths,
+            overwrote: result.overwrote,
+            errors: result.errors,
+          });
         }
         break;
       }
@@ -1481,6 +1494,56 @@ export function resolveWorkspaceTarget(rawPath: string, roots: string[]): string
     }
   }
   return null;
+}
+
+async function autoApplyWorkspaceFiles(
+  files: unknown
+): Promise<{ paths: string[]; overwrote: string[]; errors: string[] }> {
+  const result = { paths: [] as string[], overwrote: [] as string[], errors: [] as string[] };
+  if (!cfg().get<boolean>('autoApplyFiles', true)) {
+    return result;
+  }
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    result.errors.push('Open a folder to create files.');
+    return result;
+  }
+  const items = Array.isArray(files) ? files : [];
+  for (const item of items.slice(0, 20)) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const rawPath = String((item as { path?: unknown }).path ?? '');
+    const content = String((item as { content?: unknown }).content ?? '');
+    if (!rawPath || content.length > 500000) {
+      result.errors.push(rawPath || 'invalid file');
+      continue;
+    }
+    const target = resolveWorkspaceTarget(rawPath, [folder.uri.fsPath]);
+    if (!target) {
+      result.errors.push(`${rawPath}: outside the workspace`);
+      continue;
+    }
+    try {
+      const existed = fs.existsSync(target);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, content, 'utf8');
+      result.paths.push(rawPath);
+      if (existed) {
+        result.overwrote.push(rawPath);
+      }
+      output?.appendLine(`[AI Assistant] auto-applied file: ${target}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      result.errors.push(`${rawPath}: ${message}`);
+    }
+  }
+  if (result.paths.length) {
+    void vscode.commands
+      .executeCommand('workbench.files.action.refreshFilesExplorer')
+      .then(undefined, () => undefined);
+  }
+  return result;
 }
 
 async function applyWorkspaceFile(rawPath: string, content: string): Promise<boolean> {

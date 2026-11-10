@@ -2,7 +2,7 @@
   "name": "ai-assistant-deepseek",
   "displayName": "Astra AI Assistant",
   "description": "Copilot-style inline completions and an agentic chat panel powered by DeepSeek.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -170,6 +170,11 @@
           ],
           "default": "freedeepseek",
           "description": "Free provider used when the chat provider is free."
+        },
+        "aiAssistant.autoApplyFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically create files from file= code blocks in assistant answers. Disable to use the Apply button instead."
         },
         "aiAssistant.contextLimit": {
           "type": "number",

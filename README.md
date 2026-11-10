@@ -295,7 +295,8 @@ dropdown:
   **Reasoning** block)
 - `FREE_MODEL` overrides this mapping
 
-Code blocks tagged with a target path get an **Apply** button:
+Code blocks tagged with a target path are **created automatically** when the
+answer finishes (default: `aiAssistant.autoApplyFiles = true`):
 
 ````markdown
 ```python file=src/app.py
@@ -303,9 +304,10 @@ print("hello")
 ```
 ````
 
-Apply asks for confirmation, creates missing directories and writes the file
-inside the open workspace; existing files require an explicit **Overwrite**.
-The confirmation shows the resolved absolute path. Answers end with a `Files:`
+The extension creates missing directories, writes the files inside the open
+workspace and refreshes the Explorer, so they appear immediately. Existing files
+are overwritten in auto mode. Set `aiAssistant.autoApplyFiles` to `false` to get
+manual **Apply** buttons with confirmation instead. Answers end with a `Files:`
 section listing every file and directory.
 
 Free chat is **stateless for the model**: it only sees the latest message, no
@@ -377,6 +379,7 @@ in `.env`. Stats are in-memory for the backend process; reset with
 | `aiAssistant.backendRoot` | `""` | Folder with `backend/` + `.env`. Auto-detected in dev; required for VSIX |
 | `aiAssistant.autoStartBackend` | `true` | Spawn Python automatically; set `false` for Docker |
 | `aiAssistant.autoStartFreeAi` | `true` | Start FreeDeepseekAPI with the extension |
+| `aiAssistant.autoApplyFiles` | `true` | Auto-create files from `file=` blocks (disable for manual Apply) |
 | `aiAssistant.freeDeepseekRoot` | `""` | FreeDeepseekAPI folder; empty = `%USERPROFILE%\Documents\GitHub\FreeDeepseekAPI` |
 | `aiAssistant.nodePath` | `node` | Node.js used to start the free proxy |
 | `aiAssistant.apiUrl` | `http://127.0.0.1:8765` | Backend URL |

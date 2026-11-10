@@ -121,6 +121,7 @@
     };
 
     let lastSettings = { provider: DEFAULT_PROVIDER, reasoningEffort: DEFAULT_EFFORT };
+    let autoApplyFiles = true;
     let state = { chats: [], activeId: null };
     let attachments = [];
     let lastStats = null;
@@ -436,24 +437,28 @@
           const header = el('div', 'code-header');
           const pathEl = el('span', 'code-path');
           pathEl.appendChild(fileLink(filePath));
-          const applyButton = document.createElement('button');
-          applyButton.type = 'button';
-          applyButton.className = 'apply-file';
-          applyButton.appendChild(iconSpan('check'));
-          applyButton.appendChild(document.createTextNode('Apply'));
-          applyButton.disabled = !allowApply;
-          applyButton.title = allowApply
-            ? 'Create or update ' + filePath
-            : 'Wait for the answer to finish';
-          applyButton.addEventListener('click', function () {
-            vscode.postMessage({
-              type: 'applyFile',
-              path: filePath,
-              content: codeLines.join('\n'),
-            });
-          });
           header.appendChild(pathEl);
-          header.appendChild(applyButton);
+          if (autoApplyFiles) {
+            header.appendChild(el('span', 'auto-badge', 'auto'));
+          } else {
+            const applyButton = document.createElement('button');
+            applyButton.type = 'button';
+            applyButton.className = 'apply-file';
+            applyButton.appendChild(iconSpan('check'));
+            applyButton.appendChild(document.createTextNode('Apply'));
+            applyButton.disabled = !allowApply;
+            applyButton.title = allowApply
+              ? 'Create or update ' + filePath
+              : 'Wait for the answer to finish';
+            applyButton.addEventListener('click', function () {
+              vscode.postMessage({
+                type: 'applyFile',
+                path: filePath,
+                content: codeLines.join('\n'),
+              });
+            });
+            header.appendChild(applyButton);
+          }
           wrapper.appendChild(header);
           wrapper.appendChild(pre);
           container.appendChild(wrapper);
@@ -698,6 +703,22 @@
         return;
       }
       const box = filesBox('Applied', [{ path: filePath }]);
+      if (box) {
+        messagesEl.appendChild(box);
+        scrollIfNearBottom();
+      }
+    }
+
+    function addAppliedFiles(paths) {
+      if (!paths || !paths.length) {
+        return;
+      }
+      const box = filesBox(
+        'Applied',
+        paths.map(function (filePath) {
+          return { path: String(filePath) };
+        })
+      );
       if (box) {
         messagesEl.appendChild(box);
         scrollIfNearBottom();
@@ -1339,6 +1360,47 @@
       return stream.el;
     }
 
+    function extractFileBlocks(text) {
+      const lines = String(text || '').split('\n');
+      const files = [];
+      let index = 0;
+      while (index < lines.length && files.length < 20) {
+        const trimmed = lines[index].trim();
+        if (!/^```/.test(trimmed)) {
+          index += 1;
+          continue;
+        }
+        const rest = trimmed.slice(3).trim();
+        const match = rest.match(/file=(?:"([^"]+)"|'([^']+)'|(\S+))/);
+        const filePath = match ? match[1] || match[2] || match[3] : '';
+        const codeLines = [];
+        index += 1;
+        while (index < lines.length && !/^```/.test(lines[index].trim())) {
+          codeLines.push(lines[index]);
+          index += 1;
+        }
+        if (index < lines.length) {
+          index += 1;
+        }
+        if (filePath) {
+          files.push({ path: filePath, content: codeLines.join('\n') });
+        }
+      }
+      return files;
+    }
+
+    function autoApplyFromMessage(message) {
+      if (!autoApplyFiles || !message || message.autoApplied || !message.content) {
+        return;
+      }
+      const files = extractFileBlocks(message.content);
+      message.autoApplied = true;
+      persist();
+      if (files.length) {
+        vscode.postMessage({ type: 'applyFiles', files: files });
+      }
+    }
+
     function finalizeStream(options) {
       if (!stream) {
         return;
@@ -1383,6 +1445,9 @@
           showChangedFiles(current.changedFiles);
         }
         persist();
+        if (!options || (!options.stopped && !options.error)) {
+          autoApplyFromMessage(message);
+        }
       }
       setStatus('');
       setStreamingUi(false);
@@ -1856,6 +1921,7 @@
             provider: safeProvider(message.provider),
             reasoningEffort: safeEffort(message.reasoningEffort),
           };
+          autoApplyFiles = message.autoApplyFiles !== false;
           {
             const chat = activeChat();
             if (!chat.messages.length && !chat.manualTitle && chat.title === 'New chat') {
@@ -1865,11 +1931,15 @@
             }
           }
           renderSelectors();
+          if (!stream) {
+            renderMessages();
+            updateEmpty();
+          }
           break;
         case 'error': {
           const text = message.text || 'Unknown error';
           if (stream) {
-            finalizeStream({});
+            finalizeStream({ error: true });
           }
           const chat = activeChat();
           chat.messages.push({ role: 'error', content: text });
@@ -1901,6 +1971,21 @@
             }
           }
           break;
+        case 'appliedFiles': {
+          const paths = Array.isArray(message.paths) ? message.paths : [];
+          if (paths.length) {
+            addAppliedFiles(paths);
+            toast(
+              (message.overwrote && message.overwrote.length
+                ? 'Updated '
+                : 'Created ') + paths.length + ' file(s)'
+            );
+          }
+          if (Array.isArray(message.errors) && message.errors.length) {
+            toast(String(message.errors[0]), 'error');
+          }
+          break;
+        }
         case 'attachment':
           addAttachment(String(message.path || ''), String(message.content || ''));
           break;

@@ -38,6 +38,7 @@ test('manifest: expected settings are present', () => {
     'aiAssistant.autoStartFreeAi',
     'aiAssistant.freeDeepseekRoot',
     'aiAssistant.nodePath',
+    'aiAssistant.autoApplyFiles',
     'aiAssistant.reasoningEffort',
     'aiAssistant.inlineRequest.enabled',
     'aiAssistant.inlineRequest.auto',
