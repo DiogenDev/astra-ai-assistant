@@ -311,6 +311,189 @@ test('stop button is shown while streaming and sends stopChat', () => {
   assert.equal(doc.getElementById('stop').hidden, true);
 });
 
+test('multiple fenced file blocks keep CSS comments and JS template literals intact', async () => {
+  const { doc, send } = createWebview();
+  const text = [
+    '```css file=css/main.css',
+    '/* main.css — comment */',
+    'html { scroll-padding-top: 10px; }',
+    '```',
+    '',
+    '```js file=js/modules/reveal.js',
+    'el.style.transitionDelay = `${Math.min(i * 60, 240)}ms`;',
+    '```',
+    '',
+    'Готово — лендинг.',
+    '',
+    'Files:',
+    '- `css/main.css`',
+    '- `js/modules/reveal.js`',
+  ].join('\n');
+  send({ type: 'delta', text });
+  send({ type: 'done', stats: {} });
+  await tick();
+
+  const blocks = doc.querySelectorAll('.code-block');
+  assert.equal(blocks.length, 2);
+  assert.match(blocks[0].querySelector('pre code').textContent, /\/\* main\.css/);
+  assert.match(blocks[1].querySelector('pre code').textContent, /\$\{Math\.min\(i \* 60, 240\)\}ms/);
+  assert.match(doc.getElementById('messages').textContent, /Готово/);
+});
+
+test('unfenced CSS, JS and SVG blocks render as pre/code without losing characters', async () => {
+  const { doc, posted, send } = createWebview();
+  const text = [
+    'Вот обновлённые стили.',
+    '',
+    '.field__input:hover {',
+    '  border-color: rgba(217, 163, 91, 0.3);',
+    '}',
+    '',
+    '/* main.css — общие глобальные стили */',
+    'html { scroll-padding-top: 10px; }',
+    '',
+    'Теперь скрипт.',
+    '',
+    'export function initHeader() {',
+    '  const delay = `${Math.min(index * 60, 240)}ms`;',
+    '  return delay;',
+    '}',
+    '',
+    'И SVG.',
+    '',
+    '<svg',
+    '  xmlns="http://www.w3.org/2000/svg"',
+    '  viewBox="0 0 24 24">',
+    '  <path d="M4 6h16" />',
+    '</svg>',
+    '',
+    'Готово — стили, скрипт и SVG обновлены.',
+    '',
+    'Files:',
+    '- `css/main.css`',
+    '- `js/modules/header.js`',
+  ].join('\n');
+  send({ type: 'delta', text });
+  send({ type: 'done', stats: {} });
+  await tick();
+
+  const codes = Array.from(doc.querySelectorAll('.msg.assistant pre code'));
+  const css = codes.find((code) => code.textContent.indexOf('.field__input:hover') >= 0);
+  const js = codes.find((code) => code.textContent.indexOf('export function initHeader') >= 0);
+  const svg = codes.find((code) => code.textContent.indexOf('<svg') >= 0);
+  assert.ok(css);
+  assert.ok(js);
+  assert.ok(svg);
+  assert.match(css.textContent, /\/\* main\.css — общие глобальные стили \*\//);
+  assert.match(css.textContent, /border-color: rgba\(217, 163, 91, 0\.3\);/);
+  assert.ok(js.textContent.indexOf('`${Math.min(index * 60, 240)}ms`') >= 0);
+  assert.match(
+    svg.textContent,
+    /<svg\n  xmlns="http:\/\/www\.w3\.org\/2000\/svg"\n  viewBox="0 0 24 24">/
+  );
+  assert.match(svg.textContent, /<path d="M4 6h16" \/>/);
+  assert.equal(doc.querySelectorAll('.msg.assistant em').length, 0);
+
+  const prose = Array.from(doc.querySelectorAll('.msg.assistant .md-p'))
+    .map((node) => node.textContent)
+    .join('\n');
+  assert.match(prose, /Вот обновлённые стили\./);
+  assert.match(prose, /Теперь скрипт\./);
+  assert.match(prose, /И SVG\./);
+  assert.match(prose, /Готово — стили, скрипт и SVG обновлены\./);
+
+  const cssLink = Array.from(doc.querySelectorAll('.msg.assistant .file-link')).find(
+    (anchor) => anchor.textContent === 'css/main.css'
+  );
+  assert.ok(cssLink);
+  click(doc, cssLink);
+  assert.ok(
+    posted.some((message) => message.type === 'openFile' && message.path === 'css/main.css')
+  );
+});
+
+test('indented code blocks keep their characters and leave prose alone', async () => {
+  const { doc, send } = createWebview();
+  const text = [
+    'Пример конфигурации:',
+    '',
+    '    .card {',
+    '      color: #fff;',
+    '    }',
+    '',
+    'После блока идёт обычный текст.',
+  ].join('\n');
+  send({ type: 'delta', text });
+  send({ type: 'done', stats: {} });
+  await tick();
+
+  const code = doc.querySelector('.msg.assistant pre code');
+  assert.ok(code);
+  assert.equal(code.textContent, '.card {\n  color: #fff;\n}');
+  const paragraphs = Array.from(doc.querySelectorAll('.msg.assistant .md-p')).map(
+    (node) => node.textContent
+  );
+  assert.ok(paragraphs.some((value) => /Пример конфигурации/.test(value)));
+  assert.ok(paragraphs.some((value) => /После блока/.test(value)));
+});
+
+test('fenced blocks with backticks, tildes and longer fences render verbatim', async () => {
+  const { doc, send } = createWebview();
+  const text = [
+    '```css',
+    'a { color: red; }',
+    '```',
+    '',
+    '~~~js',
+    'const label = `x${y}`;',
+    '~~~',
+    '',
+    '````html',
+    '<div>{{ value }}</div>',
+    '```',
+    '````',
+    '',
+    'Готово.',
+  ].join('\n');
+  send({ type: 'delta', text });
+  send({ type: 'done', stats: {} });
+  await tick();
+
+  const codes = Array.from(doc.querySelectorAll('.msg.assistant pre code'));
+  assert.equal(codes.length, 3);
+  assert.equal(codes[0].textContent, 'a { color: red; }');
+  assert.equal(codes[0].className, 'language-css');
+  assert.equal(codes[1].textContent, 'const label = `x${y}`;');
+  assert.equal(codes[1].className, 'language-js');
+  assert.equal(codes[2].textContent, '<div>{{ value }}</div>\n```');
+  assert.equal(codes[2].className, 'language-html');
+  assert.match(doc.getElementById('messages').textContent, /Готово\./);
+});
+
+test('streaming an open fenced block is re-rendered correctly after done', async () => {
+  const { doc, send } = createWebview();
+  send({
+    type: 'delta',
+    text: '```css\n/* main.css — comment */\n.field__input:hover {\n  border-color: rgba(217, 163, 91, 0.3);',
+  });
+  await tick();
+  assert.ok(doc.querySelector('.msg.assistant pre code'));
+
+  send({ type: 'delta', text: '\n}\n```\n\nГотово.' });
+  send({ type: 'done', stats: {} });
+  await tick();
+
+  const code = doc.querySelector('.msg.assistant pre code');
+  assert.ok(code);
+  assert.match(code.textContent, /\/\* main\.css — comment \*\//);
+  assert.match(code.textContent, /border-color: rgba\(217, 163, 91, 0\.3\);/);
+  const prose = Array.from(doc.querySelectorAll('.msg.assistant .md-p'))
+    .map((node) => node.textContent)
+    .join('\n');
+  assert.match(prose, /Готово\./);
+  assert.equal(doc.querySelectorAll('.msg.assistant em').length, 0);
+});
+
 test('file blocks are auto-applied on done', async () => {
   const { doc, posted, send } = createWebview();
   send({

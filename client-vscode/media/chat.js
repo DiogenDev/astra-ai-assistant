@@ -331,8 +331,114 @@
       }
     }
 
+    const FENCE_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+    const CODE_START_RE =
+      /^(?:import\s|export\s|from\s+['"]|from\s+[\w.]+\s+import\s|const\s|let\s|var\s|function\s|async\s+function\b|def\s+[A-Za-z_]\w*\s*\(|fn\s+[A-Za-z_]\w*\s*\(|func\s+[A-Za-z_]\w*\s*\(|class\s|interface\s|enum\s|type\s+[A-Za-z_$][\w$]*\s*=|return(?:\s*[;({<\[]|\s+[A-Za-z_$][\w$.]*\s*[;.)])|if\s*\(|else\s*\{|for\s*\(|while\s*\(|switch\s*\(|case\s+[^:]+:|try\s*\{|catch\s*\(|finally\s*\{|throw\s|new\s+[A-Za-z_$][\w$]*(?:\.[\w$]+)*\s*\(|await\s|yield\b|document\.|window\.|console\.|module\.exports|require\s*\(|addEventListener\s*\(|querySelector(?:All)?\s*\(|#(?:include|define|import|pragma)\b)/;
+    const CSS_RULE_RE = /^(?:[.#][\w-]+|:root|[a-z][a-z0-9-]*)[^{}]*\{/;
+    const CSS_DECL_RE = /^[a-z-]+\s*:\s*[^;{}]*[;{}]\s*$/;
+    const MARKUP_START_RE =
+      /^(?:<!--|<!DOCTYPE\b|<\?xml\b|<\/?[a-zA-Z][\w:-]*(?:\s|>|\/|$))/i;
+
+    function matchFence(line) {
+      const match = FENCE_RE.exec(String(line || ''));
+      if (!match) {
+        return null;
+      }
+      return {
+        char: match[2].charAt(0),
+        length: match[2].length,
+        info: match[3].trim(),
+      };
+    }
+
+    function isClosingFence(line, fence) {
+      const match = /^\s*(`{3,}|~{3,})\s*$/.exec(String(line || ''));
+      return Boolean(
+        match && match[1].charAt(0) === fence.char && match[1].length >= fence.length
+      );
+    }
+
+    function parseFenceMeta(info) {
+      const rest = String(info || '').trim();
+      const fileMatch = rest.match(/file=(?:"([^"]+)"|'([^']+)'|(\S+))/);
+      const filePath = fileMatch ? fileMatch[1] || fileMatch[2] || fileMatch[3] : '';
+      const language =
+        rest
+          .replace(/file=(?:"[^"]+"|'[^']+'|\S+)/, '')
+          .trim()
+          .split(/\s+/)[0] || '';
+      return { filePath: filePath, language: language };
+    }
+
+    function readFenceBlock(lines, startIndex) {
+      const fence = matchFence(lines[startIndex]);
+      const codeLines = [];
+      let index = startIndex + 1;
+      while (index < lines.length && !isClosingFence(lines[index], fence)) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      return { fence: fence, codeLines: codeLines, nextIndex: index };
+    }
+
+    function isMarkdownStructure(line) {
+      const trimmed = String(line || '').trim();
+      if (!trimmed) {
+        return false;
+      }
+      return (
+        Boolean(matchFence(line)) ||
+        /^(#{1,4})\s+/.test(trimmed) ||
+        /^(---+|\*\*\*+)$/.test(trimmed) ||
+        /^([-*]|\d+\.)\s+/.test(trimmed) ||
+        /^>\s?/.test(trimmed)
+      );
+    }
+
+    function looksLikeCodeLine(line) {
+      const raw = String(line || '');
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        return false;
+      }
+      if (/\/\*|\*\//.test(trimmed) || /^\s*\/\//.test(raw)) {
+        return true;
+      }
+      if (CODE_START_RE.test(trimmed)) {
+        return true;
+      }
+      if (MARKUP_START_RE.test(trimmed)) {
+        return true;
+      }
+      if (CSS_RULE_RE.test(trimmed) || CSS_DECL_RE.test(trimmed)) {
+        return true;
+      }
+      if (/[{}]/.test(trimmed)) {
+        return true;
+      }
+      if (/(?:\$\{|=>|===|!==|&&|\|\||<\/|\/>)/.test(trimmed)) {
+        return true;
+      }
+      return /;\s*$/.test(trimmed);
+    }
+
+    function looksLikeCodeContinuation(line) {
+      const raw = String(line || '');
+      if (!/^\s+\S/.test(raw) || isMarkdownStructure(raw)) {
+        return false;
+      }
+      if (looksLikeCodeLine(raw)) {
+        return true;
+      }
+      const trimmed = raw.trim();
+      return /[{}();=<>`]/.test(trimmed) || /[,:(]$/.test(trimmed);
+    }
+
     function renderInline(parent, text) {
-      const re = /(`[^`]*`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]*\]\([^)]*\))/g;
+      const re = /(`[^`]*`|(?<!\/)\*\*[^*]+\*\*(?!\/)|(?<!\/)\*[^*\n]+\*(?!\/)|\[[^\]]*\]\([^)]*\))/g;
       let last = 0;
       let match;
       while ((match = re.exec(text)) !== null) {
@@ -397,71 +503,100 @@
         listEl = null;
       }
 
+      function appendCodeBlock(codeLines, language, filePath) {
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        if (language) {
+          code.className = 'language-' + language;
+        }
+        code.textContent = codeLines.join('\n');
+        pre.appendChild(code);
+
+        if (!filePath) {
+          container.appendChild(pre);
+          return;
+        }
+
+        const wrapper = el('div', 'code-block');
+        const header = el('div', 'code-header');
+        const pathEl = el('span', 'code-path');
+        pathEl.appendChild(fileLink(filePath));
+        header.appendChild(pathEl);
+        if (autoApplyFiles) {
+          header.appendChild(el('span', 'auto-badge', 'auto'));
+        } else {
+          const applyButton = document.createElement('button');
+          applyButton.type = 'button';
+          applyButton.className = 'apply-file';
+          applyButton.appendChild(iconSpan('check'));
+          applyButton.appendChild(document.createTextNode('Apply'));
+          applyButton.disabled = !allowApply;
+          applyButton.title = allowApply
+            ? 'Create or update ' + filePath
+            : 'Wait for the answer to finish';
+          applyButton.addEventListener('click', function () {
+            vscode.postMessage({
+              type: 'applyFile',
+              path: filePath,
+              content: codeLines.join('\n'),
+            });
+          });
+          header.appendChild(applyButton);
+        }
+        wrapper.appendChild(header);
+        wrapper.appendChild(pre);
+        container.appendChild(wrapper);
+      }
+
       while (index < lines.length) {
         const line = lines[index];
         const trimmed = line.trim();
 
-        if (/^```/.test(trimmed)) {
+        if (!trimmed) {
           closeList();
-          const rest = trimmed.slice(3).trim();
-          const fileMatch = rest.match(/file=(?:"([^"]+)"|'([^']+)'|(\S+))/);
-          const filePath = fileMatch ? fileMatch[1] || fileMatch[2] || fileMatch[3] : '';
-          const language =
-            rest
-              .replace(/file=(?:"[^"]+"|'[^']+'|\S+)/, '')
-              .trim()
-              .split(/\s+/)[0] || '';
-          const codeLines = [];
           index += 1;
-          while (index < lines.length && !/^```/.test(lines[index].trim())) {
-            codeLines.push(lines[index]);
+          continue;
+        }
+
+        const fence = matchFence(line);
+        if (fence) {
+          closeList();
+          const meta = parseFenceMeta(fence.info);
+          const block = readFenceBlock(lines, index);
+          appendCodeBlock(block.codeLines, meta.language, meta.filePath);
+          index = block.nextIndex;
+          continue;
+        }
+
+        const indented = /^(?: {4}|\t)/.test(line);
+        const listContinuation =
+          indented &&
+          listEl &&
+          (!looksLikeCodeLine(line) || /^([-*]|\d+\.)\s+/.test(trimmed));
+        if (indented && !listContinuation) {
+          closeList();
+          const codeLines = [];
+          while (index < lines.length) {
+            const raw = lines[index];
+            if (!raw.trim()) {
+              let next = index + 1;
+              while (next < lines.length && !lines[next].trim()) {
+                next += 1;
+              }
+              if (next < lines.length && /^(?: {4}|\t)/.test(lines[next])) {
+                codeLines.push('');
+                index += 1;
+                continue;
+              }
+              break;
+            }
+            if (!/^(?: {4}|\t)/.test(raw)) {
+              break;
+            }
+            codeLines.push(raw.replace(/^(?: {4}|\t)/, ''));
             index += 1;
           }
-          if (index < lines.length) {
-            index += 1;
-          }
-          const pre = document.createElement('pre');
-          const code = document.createElement('code');
-          if (language) {
-            code.className = 'language-' + language;
-          }
-          code.textContent = codeLines.join('\n');
-          pre.appendChild(code);
-
-          if (!filePath) {
-            container.appendChild(pre);
-            continue;
-          }
-
-          const wrapper = el('div', 'code-block');
-          const header = el('div', 'code-header');
-          const pathEl = el('span', 'code-path');
-          pathEl.appendChild(fileLink(filePath));
-          header.appendChild(pathEl);
-          if (autoApplyFiles) {
-            header.appendChild(el('span', 'auto-badge', 'auto'));
-          } else {
-            const applyButton = document.createElement('button');
-            applyButton.type = 'button';
-            applyButton.className = 'apply-file';
-            applyButton.appendChild(iconSpan('check'));
-            applyButton.appendChild(document.createTextNode('Apply'));
-            applyButton.disabled = !allowApply;
-            applyButton.title = allowApply
-              ? 'Create or update ' + filePath
-              : 'Wait for the answer to finish';
-            applyButton.addEventListener('click', function () {
-              vscode.postMessage({
-                type: 'applyFile',
-                path: filePath,
-                content: codeLines.join('\n'),
-              });
-            });
-            header.appendChild(applyButton);
-          }
-          wrapper.appendChild(header);
-          wrapper.appendChild(pre);
-          container.appendChild(wrapper);
+          appendCodeBlock(codeLines, '', '');
           continue;
         }
 
@@ -509,9 +644,67 @@
           continue;
         }
 
-        if (!trimmed) {
+        if (looksLikeCodeLine(line)) {
           closeList();
-          index += 1;
+          const codeLines = [];
+          let inComment = false;
+          let inMarkup = false;
+          while (index < lines.length) {
+            const raw = lines[index];
+            if (!raw.trim()) {
+              if (inMarkup) {
+                codeLines.push('');
+                index += 1;
+                continue;
+              }
+              let next = index + 1;
+              while (next < lines.length && !lines[next].trim()) {
+                next += 1;
+              }
+              if (
+                next < lines.length &&
+                !isMarkdownStructure(lines[next]) &&
+                looksLikeCodeLine(lines[next])
+              ) {
+                codeLines.push('');
+                index += 1;
+                continue;
+              }
+              break;
+            }
+            const commentContinuation = inComment && /^\s*\*/.test(raw);
+            if (isMarkdownStructure(raw) && !commentContinuation && !inMarkup) {
+              break;
+            }
+            if (
+              !looksLikeCodeLine(raw) &&
+              !looksLikeCodeContinuation(raw) &&
+              !commentContinuation &&
+              !inMarkup
+            ) {
+              break;
+            }
+            if (/\/\*/.test(raw) && !/\*\//.test(raw)) {
+              inComment = true;
+            }
+            if (/\*\//.test(raw)) {
+              inComment = false;
+            }
+            const lastOpen = raw.lastIndexOf('<');
+            const lastClose = raw.lastIndexOf('>');
+            if (
+              raw.trim().charAt(0) === '<' &&
+              lastOpen > lastClose &&
+              /^<[a-zA-Z!/?]/.test(raw.slice(lastOpen))
+            ) {
+              inMarkup = true;
+            } else if (lastClose >= 0) {
+              inMarkup = false;
+            }
+            codeLines.push(raw);
+            index += 1;
+          }
+          appendCodeBlock(codeLines, '', '');
           continue;
         }
 
@@ -521,10 +714,13 @@
         while (
           index < lines.length &&
           lines[index].trim() &&
-          !/^```/.test(lines[index].trim()) &&
+          !matchFence(lines[index]) &&
           !/^(#{1,4})\s+/.test(lines[index].trim()) &&
+          !/^(---+|\*\*\*+)$/.test(lines[index].trim()) &&
           !/^([-*]|\d+\.)\s+/.test(lines[index].trim()) &&
-          !/^>\s?/.test(lines[index].trim())
+          !/^>\s?/.test(lines[index].trim()) &&
+          !/^(?: {4}|\t)/.test(lines[index]) &&
+          !looksLikeCodeLine(lines[index])
         ) {
           paragraph += '\n' + lines[index];
           index += 1;
@@ -1365,26 +1561,17 @@
       const files = [];
       let index = 0;
       while (index < lines.length && files.length < 20) {
-        const trimmed = lines[index].trim();
-        if (!/^```/.test(trimmed)) {
+        const fence = matchFence(lines[index]);
+        if (!fence) {
           index += 1;
           continue;
         }
-        const rest = trimmed.slice(3).trim();
-        const match = rest.match(/file=(?:"([^"]+)"|'([^']+)'|(\S+))/);
-        const filePath = match ? match[1] || match[2] || match[3] : '';
-        const codeLines = [];
-        index += 1;
-        while (index < lines.length && !/^```/.test(lines[index].trim())) {
-          codeLines.push(lines[index]);
-          index += 1;
+        const block = readFenceBlock(lines, index);
+        const meta = parseFenceMeta(fence.info);
+        if (meta.filePath) {
+          files.push({ path: meta.filePath, content: block.codeLines.join('\n') });
         }
-        if (index < lines.length) {
-          index += 1;
-        }
-        if (filePath) {
-          files.push({ path: filePath, content: codeLines.join('\n') });
-        }
+        index = block.nextIndex;
       }
       return files;
     }

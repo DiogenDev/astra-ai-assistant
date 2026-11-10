@@ -2,7 +2,7 @@
   "name": "ai-assistant-deepseek",
   "displayName": "Astra AI Assistant",
   "description": "Copilot-style inline completions and an agentic chat panel powered by DeepSeek.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
