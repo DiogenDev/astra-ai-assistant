@@ -21,6 +21,9 @@ class Totals:
     cache_hit_tokens: int = 0
     cache_miss_tokens: int = 0
     cost_usd: float = 0.0
+    last_prompt_tokens: int = 0
+    last_completion_tokens: int = 0
+    last_total_tokens: int = 0
 
 
 _lock = threading.Lock()
@@ -86,7 +89,19 @@ def record_usage(usage: Any) -> dict[str, Any] | None:
         _totals.cache_hit_tokens += hit
         _totals.cache_miss_tokens += miss
         _totals.cost_usd += cost
+        _totals.last_prompt_tokens = prompt
+        _totals.last_completion_tokens = completion
+        _totals.last_total_tokens = total
         return _snapshot_locked(peak)
+
+
+def record_free_request() -> dict[str, Any]:
+    with _lock:
+        _totals.requests += 1
+        _totals.last_prompt_tokens = 0
+        _totals.last_completion_tokens = 0
+        _totals.last_total_tokens = 0
+        return _snapshot_locked()
 
 
 def snapshot() -> dict[str, Any]:
@@ -103,6 +118,9 @@ def reset() -> dict[str, Any]:
         _totals.cache_hit_tokens = 0
         _totals.cache_miss_tokens = 0
         _totals.cost_usd = 0.0
+        _totals.last_prompt_tokens = 0
+        _totals.last_completion_tokens = 0
+        _totals.last_total_tokens = 0
         return _snapshot_locked()
 
 
@@ -114,6 +132,7 @@ def _snapshot_locked(peak: bool | None = None) -> dict[str, Any]:
     data["currency"] = "$"
     data["model"] = settings.model
     data["peak"] = current_peak
+    data["context_limit"] = settings.context_limit
     data["prices_per_m"] = {
         "cache_hit": price_hit,
         "cache_miss": price_miss,

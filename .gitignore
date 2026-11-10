@@ -16,3 +16,5 @@ client-vscode/node_modules/
 .DS_Store
 Thumbs.db
 .idea/
+client-vscode/backend/
+client-vscode/requirements.txt

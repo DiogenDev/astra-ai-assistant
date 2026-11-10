@@ -1,4 +1,4 @@
-# AI Assistant MVP (DeepSeek + VS Code)
+# Astra AI Assistant (DeepSeek + VS Code)
 
 A minimal AI coding assistant: Copilot-style inline completions, a chat panel, and an
 agent that can read, search, create and edit files in the workspace.
@@ -12,6 +12,32 @@ ai-assistant/
   client-vscode/    thin VS Code extension (ghost text + webview + commands)
   .env              DEEPSEEK_API_KEY, AUTH_TOKEN, model
 ```
+
+## Quick setup
+
+### From this repository (Windows)
+
+```powershell
+setup.bat
+```
+
+The menu configures keys/providers/models, installs Python dependencies, builds
+and installs the VSIX, checks health and starts the FreeDeepseekAPI proxy. It
+writes configuration to the repo `.env` and to VS Code's global storage
+(`%APPDATA%\Code\User\globalStorage\local.ai-assistant-deepseek\ai-assistant.env`).
+
+### Install the VSIX (for anyone)
+
+1. Install `client-vscode/ai-assistant.vsix` (`Extensions` -> `...` ->
+   `Install from VSIX...`).
+2. Run **AI: Install Backend Dependencies** (Python 3.10+ with pip required).
+3. Run **AI: Setup / Settings** and enter your keys/providers. Keys are stored
+   in VS Code SecretStorage and the local config file.
+4. Open your project, trust it, and use the chat.
+
+The VSIX bundles the Python backend. File tools are sandboxed to the open
+workspace and configuration lives outside the project, so installing the
+extension does not touch your project files.
 
 ## 1. Configure
 
@@ -54,9 +80,14 @@ extension warns and file links may point at the wrong project. Health check:
 
 ```powershell
 cd ai-assistant/client-vscode
-npm install
-npm run compile
+npm.cmd install
+npm.cmd run compile
 ```
+
+> On Windows, if PowerShell blocks `npm` with a script-execution error, use
+> `npm.cmd` (as above) or run
+> `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` once.
+> The VS Code `F5` task already uses `npm.cmd`.
 
 Then open the `client-vscode` folder in VS Code and press `F5`
 (Run Extension). The extension starts the Python backend automatically.
@@ -129,6 +160,21 @@ Notes:
 - Stop with `docker-compose down`.
 - If Docker is not running, the extension shows `⚠ AI` and a warning.
 
+## Chat UI
+
+- **Chats drawer** (top-left): create, rename, delete and switch conversations.
+  Chats and their messages persist across webview reloads.
+- **Per-chat model**: every chat remembers Auto / GPT 6 Astra / GPT 5.6 Terra and
+  its reasoning level; switching conversations restores them.
+- **Tokens / Context** buttons: separate panels for cumulative tokens/cache/cost/
+  requests and last-request context vs `CONTEXT_LIMIT`.
+- **Attachments**: the **+** button left of the composer adds files or a workspace
+  path; removable chips are included in the next request.
+- **Message actions**: hover a user message for Copy / Edit / Delete; assistant
+  messages can be copied, inserted, or applied through `file=` blocks.
+- **Stop**: cancels the active request.
+- Empty state, toasts, keyboard focus, aria labels and reduced-motion support.
+
 ## Features
 
 - **Inline completion** — ghost text on typing (`aiAssistant.enableInline`).
@@ -158,6 +204,127 @@ code, editing the current file in place (including unsaved changes). Press
 - `aiAssistant.inlineRequest.idleDelayMs` (default `3000`) — how long typing must
   be idle before the request runs.
 - Backend endpoint: `POST /inline` (instruction + current buffer + language).
+
+## Free mode (no API key)
+
+Pick the model in the chat header dropdown:
+
+- **Auto** — DeepSeek if a key is set, otherwise Free.
+- **GPT 6 Astra** — DeepSeek persona with tools and file editing.
+- **Free** — plain free model, no persona memory.
+
+The dropdown writes `aiAssistant.provider`; it can also be set in `.env` as `PROVIDER`:
+
+- `auto` (default) — DeepSeek when `DEEPSEEK_API_KEY` is set, otherwise free.
+- `deepseek` — always DeepSeek.
+- `free` — always free.
+
+### Main free method: FreeDeepseekAPI (DeepSeek Web proxy)
+
+[FreeDeepseekAPI](https://github.com/ForgetMeAI/FreeDeepseekAPI) turns your
+logged-in DeepSeek Web account into an OpenAI-compatible endpoint at
+`http://127.0.0.1:9655/v1`. No API key and no billing.
+
+1. Run `start-free-ai.bat` **once** for the first login. It clones the proxy
+   into `%USERPROFILE%\Documents\GitHub\FreeDeepseekAPI`, opens Chrome for the
+   DeepSeek login and starts it. Log in to `chat.deepseek.com`, send `ok`, then
+   press Enter. **The console is shown only for that first login; later starts
+   are headless.** After that the extension starts the proxy automatically on
+   every activation when Free mode is active (`aiAssistant.autoStartFreeAi`).
+   - `stop-free-ai.bat` — stop the background proxy.
+   - `login-free-ai.bat` — re-authenticate when the DeepSeek session expires.
+   - `start-free-ai-console.bat` — start with a visible console (debugging).
+   - Logs: `%USERPROFILE%\Documents\GitHub\FreeDeepseekAPI\proxy.out.log` and
+     `proxy.err.log`.
+2. `.env`:
+   ```ini
+   FREE_PROVIDER=freedeepseek
+   FREE_MODEL=deepseek-chat        # or deepseek-reasoner for thinking
+   FREE_DEEPSEEK_URL=http://127.0.0.1:9655/v1
+   ```
+3. Restart the backend and pick **Free** in the chat header.
+
+`deepseek-auth.json` is access to your DeepSeek Web login: keep it private and
+never commit it. This is an experimental third-party web proxy; DeepSeek may
+change its Web API at any time.
+
+Other free backends (`FREE_PROVIDER`):
+
+| Value | Key | Answers in chat | Notes |
+| --- | --- | --- | --- |
+| `google` (default) | no | no | Opens Google AI Mode in the browser (`udm=50`) |
+| `gemini` | free key | yes | <https://aistudio.google.com/apikey> |
+| `openrouter` | free key | yes | <https://openrouter.ai/keys>, use `:free` models |
+| `groq` | free key | yes | <https://console.groq.com/keys> |
+| `ollama` | no | yes | Local: <https://ollama.com/download>, then `ollama pull qwen2.5-coder:1.5b` |
+| `pollinations` | no | yes | Public free endpoint, may be blocked |
+| `openai` | maybe | yes | Any OpenAI-compatible `FREE_BASE_URL` + `FREE_API_KEY` + `FREE_MODEL` |
+
+Examples:
+
+```ini
+# Gemini free tier (recommended for in-chat answers)
+FREE_PROVIDER=gemini
+FREE_API_KEY=your-gemini-key
+FREE_MODEL=gemini-3.8-flash
+```
+
+```ini
+# OpenRouter free models
+FREE_PROVIDER=openrouter
+FREE_API_KEY=your-openrouter-key
+FREE_MODEL=meta-llama/llama-3.3-70b-instruct:free
+```
+
+```ini
+# Local Ollama (no key, works offline)
+FREE_PROVIDER=ollama
+OLLAMA_MODEL=qwen2.5-coder:1.5b
+```
+
+GitHub Models was **retired on 2026-07-30**, so it is not an option. The
+extension never scrapes Google; `google` mode only opens the official page.
+
+### GPT 5.6 Terra (free chat)
+
+The free chat identifies itself as **GPT 5.6 Terra** and honors the reasoning
+dropdown:
+
+- `none` / `low` / `medium` → `deepseek-chat` (fast, no thinking)
+- `high` → `deepseek-reasoner` (thinking; the reasoning is shown as a collapsed
+  **Reasoning** block)
+- `FREE_MODEL` overrides this mapping
+
+Code blocks tagged with a target path get an **Apply** button:
+
+````markdown
+```python file=src/app.py
+print("hello")
+```
+````
+
+Apply asks for confirmation, creates missing directories and writes the file
+inside the open workspace; existing files require an explicit **Overwrite**.
+The confirmation shows the resolved absolute path. Answers end with a `Files:`
+section listing every file and directory.
+
+Free chat is **stateless for the model**: it only sees the latest message, no
+model memory. The UI keeps multiple local chats (persisted in the webview); use
+**New** to start a fresh one. In Google free mode inline completions/edits are
+disabled.
+
+Free requests are capped by `FREE_TIMEOUT` (default 30 s); the extension also
+aborts if the backend stays silent for 45 s, so "Thinking..." cannot hang forever.
+
+## Tests
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+CI (`.github/workflows/ci.yml`) runs these tests, `compileall`, the smoke test
+and `tsc` for the extension.
 
 ## Reasoning & diffs
 
@@ -209,6 +376,9 @@ in `.env`. Stats are in-memory for the backend process; reset with
 | `aiAssistant.pythonPath` | `python` | Python executable used to start the backend |
 | `aiAssistant.backendRoot` | `""` | Folder with `backend/` + `.env`. Auto-detected in dev; required for VSIX |
 | `aiAssistant.autoStartBackend` | `true` | Spawn Python automatically; set `false` for Docker |
+| `aiAssistant.autoStartFreeAi` | `true` | Start FreeDeepseekAPI with the extension |
+| `aiAssistant.freeDeepseekRoot` | `""` | FreeDeepseekAPI folder; empty = `%USERPROFILE%\Documents\GitHub\FreeDeepseekAPI` |
+| `aiAssistant.nodePath` | `node` | Node.js used to start the free proxy |
 | `aiAssistant.apiUrl` | `http://127.0.0.1:8765` | Backend URL |
 | `aiAssistant.port` | `8765` | Port for the spawned backend |
 | `aiAssistant.authToken` | `""` | Must match `AUTH_TOKEN` in `.env` |

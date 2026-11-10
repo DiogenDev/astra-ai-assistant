@@ -1,6 +1,8 @@
 import * as cp from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -17,6 +19,88 @@ let inlinePendingDoc: vscode.TextDocument | undefined;
 let inlinePendingInstruction: string | undefined;
 
 const INLINE_TRIGGER = /^\s*(?:#|\/\/|--|<!--|\/\*)\s*@?ai\s*:\s*(.*)$/i;
+
+const MAX_ATTACHMENT_BYTES = 200 * 1024;
+const MAX_ATTACHMENTS = 8;
+const PROVIDERS = new Set(['auto', 'deepseek', 'free']);
+const EFFORT_LEVELS = new Set(['auto', 'none', 'low', 'medium', 'high']);
+
+interface AttachmentPayload {
+  path: string;
+  content: string;
+}
+
+function normalizeProvider(value: unknown): string {
+  const key = String(value ?? '').trim().toLowerCase();
+  return PROVIDERS.has(key) ? key : 'auto';
+}
+
+function normalizeReasoning(value: unknown): string {
+  const key = String(value ?? '').trim().toLowerCase();
+  return EFFORT_LEVELS.has(key) ? key : 'medium';
+}
+
+function sanitizeAttachments(value: unknown): AttachmentPayload[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: AttachmentPayload[] = [];
+  for (const item of value.slice(0, MAX_ATTACHMENTS)) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const rawPath = String((item as { path?: unknown }).path ?? '').slice(0, 400);
+    if (!rawPath) {
+      continue;
+    }
+    result.push({
+      path: rawPath,
+      content: String((item as { content?: unknown }).content ?? '').slice(
+        0,
+        MAX_ATTACHMENT_BYTES
+      ),
+    });
+  }
+  return result;
+}
+
+function attachmentDisplayPath(fsPath: string): string {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder) {
+    const relative = path.relative(folder.uri.fsPath, fsPath);
+    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+      return relative.split(path.sep).join('/');
+    }
+  }
+  return fsPath;
+}
+
+function readAttachmentFile(fsPath: string): AttachmentPayload | null {
+  try {
+    const stat = fs.statSync(fsPath);
+    if (!stat.isFile()) {
+      return null;
+    }
+    const size = Math.min(stat.size, MAX_ATTACHMENT_BYTES);
+    let content = '';
+    if (size > 0) {
+      const buffer = Buffer.alloc(size);
+      const fd = fs.openSync(fsPath, 'r');
+      try {
+        fs.readSync(fd, buffer, 0, size, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+      content = buffer.toString('utf8');
+    }
+    if (stat.size > MAX_ATTACHMENT_BYTES) {
+      content += '\n\u2026[truncated]';
+    }
+    return { path: attachmentDisplayPath(fsPath), content };
+  } catch {
+    return null;
+  }
+}
 
 function parseInlineTrigger(lineText: string): string | null {
   const match = lineText.match(INLINE_TRIGGER);
@@ -93,10 +177,9 @@ function authToken(): string {
   return cfg().get<string>('authToken', '') || dotenvToken || process.env.AI_ASSISTANT_TOKEN || '';
 }
 
-function readDotEnv(projectRoot: string): Record<string, string> {
+function readEnvFile(file: string): Record<string, string> {
   const values: Record<string, string> = {};
   try {
-    const file = path.join(projectRoot, '.env');
     if (!fs.existsSync(file)) {
       return values;
     }
@@ -118,6 +201,22 @@ function readDotEnv(projectRoot: string): Record<string, string> {
     // ignore .env read errors
   }
   return values;
+}
+
+function readDotEnv(projectRoot: string): Record<string, string> {
+  return readEnvFile(path.join(projectRoot, '.env'));
+}
+
+function configEnvFile(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, 'ai-assistant.env');
+}
+
+function writeEnvFile(file: string, values: Record<string, string>): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const body = Object.entries(values)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+  fs.writeFileSync(file, body + '\n', 'utf8');
 }
 
 function delay(ms: number): Promise<void> {
@@ -161,6 +260,14 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
       void vscode.commands.executeCommand('aiAssistant.chatView.focus');
     })
   );
+  safeRegister('command setup', context, () =>
+    vscode.commands.registerCommand('aiAssistant.setup', () => runSetupWizard(context))
+  );
+  safeRegister('command installDeps', context, () =>
+    vscode.commands.registerCommand('aiAssistant.installDeps', () =>
+      installBackendDependencies(context)
+    )
+  );
   safeRegister('command explainSelection', context, () =>
     vscode.commands.registerCommand('aiAssistant.explainSelection', () =>
       runPreset('Explain the selected code in detail.')
@@ -172,7 +279,10 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
     )
   );
   safeRegister('inline completions', context, () =>
-    vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, new InlineProvider())
+    vscode.languages.registerInlineCompletionItemProvider(
+      { scheme: 'file', pattern: '**' },
+      new InlineProvider()
+    )
   );
   safeRegister('inline request command', context, () =>
     vscode.commands.registerCommand('aiAssistant.runInlineRequest', () => {
@@ -262,6 +372,12 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
   } catch (err) {
     reportError('backend startup', err);
   }
+
+  try {
+    await ensureFreeProxy();
+  } catch (err) {
+    reportError('free proxy startup', err);
+  }
 }
 
 function safeRegister(
@@ -314,10 +430,11 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
   const hasBackend = fs.existsSync(path.join(projectRoot, 'backend', 'main.py'));
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? projectRoot;
   const python = cfg().get<string>('pythonPath', 'python');
-  const dotenv = readDotEnv(projectRoot);
-  dotenvToken = dotenv.AUTH_TOKEN ?? '';
+  const envFile = configEnvFile(context);
+  const fileEnv = fs.existsSync(envFile) ? readEnvFile(envFile) : readDotEnv(projectRoot);
+  dotenvToken = cfg().get<string>('authToken', '') || fileEnv.AUTH_TOKEN || '';
   if (dotenvToken) {
-    output.appendLine('[AI Assistant] using AUTH_TOKEN from .env');
+    output.appendLine('[AI Assistant] using AUTH_TOKEN from the AI Assistant config');
   }
 
   if (await waitForHealth(port, 1)) {
@@ -365,10 +482,26 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
   }
 
   const env: NodeJS.ProcessEnv = { ...process.env, WORKSPACE_ROOT: workspace, PORT: String(port) };
-  const token = cfg().get<string>('authToken', '');
+  if (fs.existsSync(envFile)) {
+    env.ENV_FILE = envFile;
+  }
+  const token = cfg().get<string>('authToken', '') || fileEnv.AUTH_TOKEN || '';
   if (token) {
     env.AUTH_TOKEN = token;
   }
+  const deepseekKey = await context.secrets.get('aiAssistant.deepseekApiKey');
+  if (deepseekKey) {
+    env.DEEPSEEK_API_KEY = deepseekKey;
+  }
+  const freeKey = await context.secrets.get('aiAssistant.freeApiKey');
+  if (freeKey) {
+    env.FREE_API_KEY = freeKey;
+  }
+  env.DEEPSEEK_MODEL = cfg().get<string>('model', 'deepseek-flash');
+  env.PROVIDER = cfg().get<string>('provider', 'auto');
+  env.FREE_PROVIDER = cfg().get<string>('freeProvider', 'freedeepseek');
+  env.REASONING_EFFORT = cfg().get<string>('reasoningEffort', 'medium');
+  env.CONTEXT_LIMIT = String(cfg().get<number>('contextLimit', 1000000));
 
   output.appendLine(`[AI Assistant] starting backend: ${python} -m uvicorn backend.main:app --port ${port}`);
   backendProc = cp.spawn(
@@ -388,6 +521,124 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
       'backend failed to start. Check aiAssistant.pythonPath and Output -> AI Assistant.'
     );
   }
+}
+
+function resolveFreeDeepseekRoot(): string {
+  const configured = cfg().get<string>('freeDeepseekRoot', '').trim();
+  if (configured) {
+    return configured;
+  }
+  return path.join(os.homedir(), 'Documents', 'GitHub', 'FreeDeepseekAPI');
+}
+
+async function freeProxyHealthy(): Promise<boolean> {
+  try {
+    const res = await httpJson('GET', 'http://127.0.0.1:9655/health', undefined, '', 1500);
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForFreeProxy(attempts: number): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (await freeProxyHealthy()) {
+      return true;
+    }
+    await delay(500);
+  }
+  return false;
+}
+
+async function ensureFreeProxy(): Promise<void> {
+  if (!cfg().get<boolean>('autoStartFreeAi', true)) {
+    return;
+  }
+  if (vscode.workspace.isTrusted === false) {
+    return;
+  }
+  const health = await fetchHealth();
+  if (health?.free_provider && health.free_provider !== 'freedeepseek') {
+    return;
+  }
+  if (await freeProxyHealthy()) {
+    output.appendLine('[AI Assistant] FreeDeepseekAPI already running.');
+    return;
+  }
+
+  const root = resolveFreeDeepseekRoot();
+  const serverFile = path.join(root, 'server.js');
+  if (!fs.existsSync(serverFile)) {
+    output.appendLine(`[AI Assistant] FreeDeepseekAPI not found at ${root}.`);
+    void vscode.window.showWarningMessage(
+      `Free mode needs FreeDeepseekAPI at ${root}. Run start-free-ai.bat first.`
+    );
+    return;
+  }
+  if (!fs.existsSync(path.join(root, 'deepseek-auth.json'))) {
+    output.appendLine('[AI Assistant] FreeDeepseekAPI has no DeepSeek login yet.');
+    void vscode.window
+      .showWarningMessage(
+        'Free mode needs a one-time DeepSeek login. Run start-free-ai.bat and log in to chat.deepseek.com.',
+        'Open Folder'
+      )
+      .then((choice) => {
+        if (choice === 'Open Folder') {
+          void vscode.env.openExternal(vscode.Uri.file(root));
+        }
+      });
+    return;
+  }
+
+  const node = cfg().get<string>('nodePath', 'node');
+  let outFd: number | 'ignore' = 'ignore';
+  let errFd: number | 'ignore' = 'ignore';
+  try {
+    outFd = fs.openSync(path.join(root, 'proxy.out.log'), 'a');
+    errFd = fs.openSync(path.join(root, 'proxy.err.log'), 'a');
+  } catch {
+    outFd = 'ignore';
+    errFd = 'ignore';
+  }
+
+  const child = cp.spawn(node, ['server.js'], {
+    cwd: root,
+    env: { ...process.env, NON_INTERACTIVE: '1' },
+    windowsHide: true,
+    detached: true,
+    stdio: ['ignore', outFd, errFd],
+  });
+  child.on('error', (error) => {
+    output.appendLine(`[AI Assistant] FreeDeepseekAPI spawn error: ${error.message}`);
+  });
+  child.unref();
+  if (typeof outFd === 'number') {
+    try {
+      fs.closeSync(outFd);
+    } catch {
+      // ignore
+    }
+  }
+  if (typeof errFd === 'number') {
+    try {
+      fs.closeSync(errFd);
+    } catch {
+      // ignore
+    }
+  }
+  output.appendLine(`[AI Assistant] starting FreeDeepseekAPI from ${root} (pid ${child.pid ?? '?'})`);
+
+  // Do not block extension activation while the proxy boots.
+  void waitForFreeProxy(30).then((ready) => {
+    if (ready) {
+      output.appendLine('[AI Assistant] FreeDeepseekAPI is ready.');
+      return;
+    }
+    output.appendLine('[AI Assistant] FreeDeepseekAPI did not become ready.');
+    void vscode.window.showWarningMessage(
+      'FreeDeepseekAPI did not start. Check proxy.err.log in its folder.'
+    );
+  });
 }
 
 function markRestricted(): void {
@@ -491,6 +742,9 @@ function httpJson(
 interface HealthInfo {
   status?: string;
   workspace?: string;
+  provider?: string;
+  free_provider?: string;
+  free_ready?: boolean;
 }
 
 async function fetchHealth(): Promise<HealthInfo | null> {
@@ -540,7 +794,7 @@ function streamChat(
   token: string,
   onEvent: (event: any) => void,
   onError: (err: Error) => void
-): void {
+): { abort: () => void } {
   const base = cfg().get<string>('apiUrl', 'http://127.0.0.1:8765');
   const url = new URL('/chat', base);
   const data = JSON.stringify(payload);
@@ -552,6 +806,29 @@ function streamChat(
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+
+  let idleTimer: NodeJS.Timeout | undefined;
+  let finished = false;
+  let sawDone = false;
+  let armIdle: () => void = () => undefined;
+
+  const clearIdle = (): void => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+  };
+  const finish = (err?: Error): void => {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    clearIdle();
+    if (err) {
+      onError(err);
+    }
+  };
+
   const req = http.request(
     { hostname: url.hostname, port: url.port, path: url.pathname, method: 'POST', headers },
     (res) => {
@@ -559,12 +836,13 @@ function streamChat(
         let errBody = '';
         res.setEncoding('utf8');
         res.on('data', (chunk: string) => (errBody += chunk));
-        res.on('end', () => onError(new Error(`HTTP ${res.statusCode}: ${errBody}`)));
+        res.on('end', () => finish(new Error(`HTTP ${res.statusCode}: ${errBody}`)));
         return;
       }
       let buffer = '';
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
+        armIdle();
         buffer += chunk;
         let idx: number;
         while ((idx = buffer.indexOf('\n\n')) >= 0) {
@@ -579,19 +857,52 @@ function streamChat(
               continue;
             }
             try {
-              onEvent(JSON.parse(json));
+              const event = JSON.parse(json);
+              if (event && event.type === 'done') {
+                sawDone = true;
+              }
+              onEvent(event);
             } catch {
               // ignore malformed event
             }
           }
         }
       });
-      res.on('end', () => onEvent({ type: 'done' }));
+      res.on('end', () => {
+        if (!finished) {
+          finish();
+          if (!sawDone) {
+            onEvent({ type: 'done' });
+          }
+        }
+      });
+      res.on('error', (err) => finish(err));
     }
   );
-  req.on('error', onError);
+
+  armIdle = (): void => {
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      finish(new Error('backend stopped responding (150s idle)'));
+      req.destroy();
+    }, 150000);
+  };
+
+  req.setTimeout(240000, () => {
+    finish(new Error('request timeout (240s)'));
+    req.destroy();
+  });
+  req.on('error', (err) => finish(err));
+  armIdle();
   req.write(data);
   req.end();
+
+  return {
+    abort: () => {
+      finish();
+      req.destroy();
+    },
+  };
 }
 
 class InlineProvider implements vscode.InlineCompletionItemProvider {
@@ -655,6 +966,8 @@ class InlineProvider implements vscode.InlineCompletionItemProvider {
 class ChatViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private pending: unknown[] = [];
+  private activeStream: { abort: () => void } | undefined;
+  private stopRequested = false;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -666,7 +979,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     view.webview.html = this.html(view.webview);
     view.webview.onDidReceiveMessage((message: any) => {
-      void this.handleMessage(message);
+      void this.handleMessage(message).catch((err) => reportError('webview message', err));
     });
 
     const timer = setInterval(() => {
@@ -707,6 +1020,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({
           type: 'settings',
           reasoningEffort: cfg().get<string>('reasoningEffort', 'medium'),
+          provider: cfg().get<string>('provider', 'auto'),
         });
         void this.refreshStats();
         break;
@@ -720,18 +1034,64 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           vscode.ConfigurationTarget.Global
         );
         break;
+      case 'setProvider':
+        await cfg().update(
+          'provider',
+          String(message.value ?? 'auto'),
+          vscode.ConfigurationTarget.Global
+        );
+        if (String(message.value ?? '') === 'free') {
+          void ensureFreeProxy();
+        }
+        break;
       case 'send':
-        this.send(String(message.text ?? ''), message.history ?? []);
+        this.send(String(message.text ?? ''), message.history ?? [], {
+          provider: message.provider,
+          reasoningEffort: message.reasoningEffort,
+          attachments: message.attachments,
+        });
         break;
-      case 'insert':
-        await insertIntoEditor(String(message.text ?? ''));
+      case 'stopChat':
+        this.stopChat();
         break;
+      case 'copyText': {
+        try {
+          await vscode.env.clipboard.writeText(String(message.text ?? ''));
+          this.post({ type: 'copied' });
+        } catch {
+          this.post({ type: 'toast', text: 'Could not copy to the clipboard' });
+        }
+        break;
+      }
+      case 'pickFiles':
+        await this.attachFilesFromDialog();
+        break;
+      case 'addPath':
+        await this.attachFileFromInput();
+        break;
+      case 'insert': {
+        const inserted = await insertIntoEditor(String(message.text ?? ''));
+        if (inserted) {
+          this.post({ type: 'toast', text: 'Inserted' });
+        }
+        break;
+      }
       case 'openFile':
         await openWorkspaceFile(
           String(message.path ?? ''),
           message.absPath ? String(message.absPath) : undefined
         );
         break;
+      case 'applyFile': {
+        const applied = await applyWorkspaceFile(
+          String(message.path ?? ''),
+          String(message.content ?? '')
+        );
+        if (applied) {
+          this.post({ type: 'appliedFile', path: String(message.path ?? '') });
+        }
+        break;
+      }
       case 'openExternal': {
         const url = String(message.url ?? '');
         if (/^https?:\/\//i.test(url)) {
@@ -739,19 +1099,46 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'openSettings':
+        await vscode.commands.executeCommand('aiAssistant.setup');
+        break;
     }
   }
 
-  private send(text: string, history: Array<{ role: string; content: string }>): void {
+  private send(
+    text: string,
+    history: Array<{ role: string; content: string }>,
+    options?: { provider?: unknown; reasoningEffort?: unknown; attachments?: unknown }
+  ): void {
     if (!text.trim()) {
       return;
     }
+    const provider = normalizeProvider(
+      options?.provider ?? cfg().get<string>('provider', 'auto')
+    );
+    const reasoningEffort = normalizeReasoning(
+      options?.reasoningEffort ?? cfg().get<string>('reasoningEffort', 'medium')
+    );
+    const attachments = sanitizeAttachments(options?.attachments);
+    const baseContext = collectContext();
+    const context = attachments.length
+      ? { ...(baseContext ?? {}), attachments }
+      : baseContext;
     const payload = {
       messages: [...history, { role: 'user', content: text }],
-      context: collectContext(),
-      reasoning_effort: cfg().get<string>('reasoningEffort', 'medium'),
+      context,
+      reasoning_effort: reasoningEffort,
+      provider,
     };
-    streamChat(
+
+    if (this.activeStream) {
+      this.stopRequested = true;
+      this.activeStream.abort();
+      this.activeStream = undefined;
+    }
+    this.stopRequested = false;
+
+    this.activeStream = streamChat(
       payload,
       authToken(),
       (event: any) => {
@@ -768,10 +1155,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
               text: `${event.name}: ${String(event.result).slice(0, 200)}`,
             });
             break;
+          case 'link': {
+            const url = String(event.url ?? '');
+            this.post({ type: 'link', url, text: String(event.text ?? 'Open link') });
+            if (/^https?:\/\//i.test(url)) {
+              void vscode.env.openExternal(vscode.Uri.parse(url));
+            }
+            break;
+          }
           case 'error':
+            output?.appendLine(`[AI Assistant] chat error: ${event.message}`);
             this.post({ type: 'error', text: event.message });
             break;
           case 'done':
+            this.activeStream = undefined;
             if (event.stats) {
               this.post({ type: 'stats', stats: event.stats });
             }
@@ -780,6 +1177,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       },
       (err: Error) => {
+        this.activeStream = undefined;
+        if (this.stopRequested) {
+          this.stopRequested = false;
+          return;
+        }
         const hint = /ECONNREFUSED|connect/i.test(err.message)
           ? ' Backend is not running. See Output -> AI Assistant.'
           : '';
@@ -788,15 +1190,92 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     );
   }
 
+  private stopChat(): void {
+    this.stopRequested = true;
+    const active = this.activeStream;
+    this.activeStream = undefined;
+    if (active) {
+      active.abort();
+      this.post({ type: 'stopped' });
+      this.post({ type: 'done' });
+      return;
+    }
+    this.post({ type: 'done' });
+  }
+
+  private async attachFilesFromDialog(): Promise<void> {
+    let selected: vscode.Uri[] | undefined;
+    try {
+      selected = await vscode.window.showOpenDialog({
+        canSelectMany: true,
+        openLabel: 'Attach',
+        title: 'Attach files to the chat',
+      });
+    } catch (err) {
+      reportError('attach files', err);
+      this.post({ type: 'attachmentError', text: 'Could not open the file picker' });
+      return;
+    }
+    if (!selected || !selected.length) {
+      return;
+    }
+    for (const uri of selected.slice(0, MAX_ATTACHMENTS)) {
+      const attachment = readAttachmentFile(uri.fsPath);
+      if (attachment) {
+        this.post({ type: 'attachment', path: attachment.path, content: attachment.content });
+      } else {
+        this.post({
+          type: 'attachmentError',
+          text: `Could not read ${path.basename(uri.fsPath)}`,
+        });
+      }
+    }
+  }
+
+  private async attachFileFromInput(): Promise<void> {
+    let value: string | undefined;
+    try {
+      value = await vscode.window.showInputBox({
+        prompt: 'Path to attach (relative to the workspace)',
+        placeHolder: 'src/app.py',
+        ignoreFocusOut: true,
+      });
+    } catch (err) {
+      reportError('attach path', err);
+      this.post({ type: 'attachmentError', text: 'Could not open the path input' });
+      return;
+    }
+    const requested = String(value ?? '').trim();
+    if (!requested) {
+      return;
+    }
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const resolved = resolveWorkspaceTarget(requested, roots);
+    if (!resolved) {
+      this.post({
+        type: 'attachmentError',
+        text: 'Path must be inside the open workspace',
+      });
+      return;
+    }
+    const attachment = readAttachmentFile(resolved);
+    if (!attachment) {
+      this.post({ type: 'attachmentError', text: `Could not read ${requested}` });
+      return;
+    }
+    this.post({ type: 'attachment', path: attachment.path, content: attachment.content });
+  }
+
   private html(webview: vscode.Webview): string {
     const css = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'media', 'chat.css')
     );
     const js = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'chat.js'));
+    const nonce = crypto.randomBytes(16).toString('base64');
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource}`,
-      `script-src ${webview.cspSource}`,
+      `script-src 'nonce-${nonce}'`,
       `img-src ${webview.cspSource} data:`,
     ].join('; ');
     return `<!DOCTYPE html>
@@ -809,27 +1288,134 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 <title>AI Assistant</title>
 </head>
 <body>
-  <div id="topbar">
-    <span id="brand">GPT 6 Astra</span>
-    <select id="reasoning" title="Reasoning effort">
-      <option value="auto">auto</option>
-      <option value="none">none</option>
-      <option value="low">low</option>
-      <option value="medium">medium</option>
-      <option value="high">high</option>
-    </select>
-  </div>
-  <div id="stats">no requests yet</div>
-  <div id="messages"></div>
-  <div id="status"></div>
-  <div id="composer">
-    <textarea id="input" rows="3" placeholder="Ask about your code..."></textarea>
-    <div id="actions">
-      <button id="insert" title="Insert last answer at cursor">Insert</button>
-      <button id="send">Send</button>
+  <header id="topbar" class="topbar">
+    <div class="topbar-row">
+      <button id="chats-toggle" class="icon-btn" type="button" aria-label="Open chats" aria-haspopup="dialog" aria-expanded="false" title="Chats">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H9l-3.5 2.5V12A2 2 0 0 1 4 10z"/><path d="M16.5 8H18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-.5v2.5L14 16h-2"/></svg></span>
+      </button>
+      <div class="title-block">
+        <span id="brand" class="brand">GPT 6 Astra</span>
+        <span id="chat-title" class="chat-title">New chat</span>
+      </div>
+      <div class="topbar-actions">
+        <button id="settings-btn" class="icon-btn" type="button" aria-label="Setup and settings" title="Setup / Settings">
+          <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.1 2.1-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21h-3v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1-2.1-2.1.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3v-3h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2.1-2.1.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3h3v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 2.1 2.1-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1H21v3h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></span>
+        </button>
+        <button id="tokens-btn" class="ghost-btn" type="button" aria-label="Token usage" aria-haspopup="dialog" aria-expanded="false" title="Token usage">
+          <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></span>
+          <span class="btn-label">Tokens</span>
+        </button>
+        <button id="context-btn" class="ghost-btn" type="button" aria-label="Context usage" aria-haspopup="dialog" aria-expanded="false" title="Context usage">
+          <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 13h8M8 16h5"/></svg></span>
+          <span class="btn-label">Context</span>
+        </button>
+        <button id="newchat" class="icon-btn accent" type="button" aria-label="New chat" title="New chat">
+          <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></span>
+        </button>
+      </div>
+    </div>
+    <div class="topbar-row controls">
+      <select id="provider" aria-label="Model provider" title="Model">
+        <option value="auto">Auto</option>
+        <option value="deepseek">GPT 6 Astra</option>
+        <option value="free">GPT 5.6 Terra</option>
+      </select>
+      <select id="reasoning" aria-label="Reasoning effort" title="Reasoning effort">
+        <option value="auto">auto</option>
+        <option value="none">none</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+      </select>
+      <span id="stats" class="stats" title="No requests yet">no requests yet</span>
+    </div>
+  </header>
+  <main class="main">
+    <div id="empty" class="empty" aria-hidden="true">
+      <div class="empty-icon"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H9l-3.5 2.5V12A2 2 0 0 1 4 10z"/><path d="M16.5 8H18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-.5v2.5L14 16h-2"/></svg></span></div>
+      <h2>Ask about your code</h2>
+      <p>Select code in the editor, then ask GPT 6 Astra to explain, fix, or build.</p>
+    </div>
+    <div id="messages" class="messages" role="log" aria-live="polite" aria-label="Conversation"></div>
+  </main>
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+  <footer id="composer" class="composer">
+    <div id="attachment-chips" class="attachment-chips" hidden></div>
+    <div class="composer-box">
+      <div class="composer-tools">
+        <button id="attach" class="icon-btn" type="button" aria-label="Attach a file" aria-haspopup="menu" aria-expanded="false" title="Attach">
+          <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 11.5l-7.6 7.6a5 5 0 0 1-7.1-7.1l8.5-8.5a3.4 3.4 0 0 1 4.8 4.8l-8.5 8.5a1.8 1.8 0 0 1-2.5-2.5l7.6-7.6"/></svg></span>
+        </button>
+        <div id="attach-menu" class="menu" role="menu" aria-label="Attach" hidden>
+          <button id="attach-file" type="button" role="menuitem">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></span>
+            Add file…
+          </button>
+          <button id="attach-path" type="button" role="menuitem">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H9l-3.5 2.5V12A2 2 0 0 1 4 10z"/><path d="M16.5 8H18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-.5v2.5L14 16h-2"/></svg></span>
+            Add path…
+          </button>
+        </div>
+      </div>
+      <textarea id="input" rows="1" placeholder="Ask about your code..." aria-label="Message"></textarea>
+      <div class="composer-actions">
+        <button id="stop" class="icon-btn" type="button" aria-label="Stop generating" title="Stop" hidden disabled>
+          <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></span>
+        </button>
+        <button id="send" class="send-btn" type="button" aria-label="Send message" title="Send">
+          <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg></span>
+        </button>
+      </div>
+    </div>
+    <div class="composer-hint">Enter to send · Shift+Enter for a new line</div>
+  </footer>
+  <div id="scrim" class="scrim" hidden></div>
+  <aside id="chat-drawer" class="drawer" role="dialog" aria-label="Chats" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <h2>Chats</h2>
+        <p class="drawer-sub">Your conversations</p>
+      </div>
+      <button id="chat-drawer-close" class="icon-btn" type="button" aria-label="Close chats" title="Close">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      </button>
+    </div>
+    <button id="drawer-newchat" class="primary-btn" type="button">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></span>
+      New chat
+    </button>
+    <div id="chats-list" class="chats-list"></div>
+  </aside>
+  <aside id="tokens-panel" class="panel" role="dialog" aria-label="Token usage" aria-hidden="true">
+    <div class="panel-head">
+      <h2>Tokens</h2>
+      <button id="tokens-close" class="icon-btn" type="button" aria-label="Close token usage" title="Close">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      </button>
+    </div>
+    <div id="tokens-content" class="panel-body"></div>
+  </aside>
+  <aside id="context-panel" class="panel" role="dialog" aria-label="Context usage" aria-hidden="true">
+    <div class="panel-head">
+      <h2>Context</h2>
+      <button id="context-close" class="icon-btn" type="button" aria-label="Close context usage" title="Close">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      </button>
+    </div>
+    <div id="context-content" class="panel-body"></div>
+  </aside>
+  <div id="confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-text" hidden>
+    <div class="modal-box">
+      <h2 id="confirm-text">Delete this chat?</h2>
+      <p class="modal-note">This action cannot be undone.</p>
+      <div class="modal-actions">
+        <button id="confirm-cancel" class="ghost-btn" type="button">Cancel</button>
+        <button id="confirm-ok" class="danger-btn" type="button">Delete</button>
+      </div>
     </div>
   </div>
-  <script src="${js}"></script>
+  <div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="true"></div>
+  <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;
   }
@@ -850,6 +1436,99 @@ function collectContext(): Record<string, unknown> | null {
     selection: selected,
     content: text.length > 12000 ? text.slice(0, 12000) : text,
   };
+}
+
+function canonicalPath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    const parent = path.dirname(value);
+    if (parent === value) {
+      return value;
+    }
+    return path.join(canonicalPath(parent), path.basename(value));
+  }
+}
+
+function normalizeForCompare(value: string): string {
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+export function resolveWorkspaceTarget(rawPath: string, roots: string[]): string | null {
+  if (!rawPath) {
+    return null;
+  }
+  const usableRoots = roots.filter((root) => Boolean(root));
+  const allowed = usableRoots.map((root) =>
+    normalizeForCompare(canonicalPath(path.resolve(root)))
+  );
+  const candidates: string[] = [];
+  if (path.isAbsolute(rawPath)) {
+    candidates.push(rawPath);
+  }
+  for (const root of usableRoots) {
+    candidates.push(path.join(root, rawPath));
+  }
+  for (const candidate of candidates) {
+    const resolved = canonicalPath(path.resolve(candidate));
+    const normalized = normalizeForCompare(resolved);
+    if (
+      allowed.some(
+        (root) => normalized === root || normalized.startsWith(root + path.sep)
+      )
+    ) {
+      return resolved;
+    }
+  }
+  return null;
+}
+
+async function applyWorkspaceFile(rawPath: string, content: string): Promise<boolean> {
+  if (!rawPath) {
+    return false;
+  }
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    void vscode.window.showWarningMessage('AI Assistant: open a folder to create files.');
+    return false;
+  }
+
+  const target = resolveWorkspaceTarget(rawPath, [folder.uri.fsPath]);
+  if (!target) {
+    void vscode.window.showWarningMessage(
+      `AI Assistant: refusing to write outside the workspace: ${rawPath}`
+    );
+    return false;
+  }
+
+  try {
+    const exists = fs.existsSync(target);
+    const action = exists ? 'Overwrite' : 'Create';
+    const choice = await vscode.window.showWarningMessage(
+      exists ? `${target} already exists. Overwrite it?` : `Create ${target}?`,
+      action,
+      'Cancel'
+    );
+    if (choice !== action) {
+      return false;
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+    output?.appendLine(`[AI Assistant] applied file: ${target}`);
+    void vscode.window
+      .showInformationMessage(`Saved ${rawPath}`, 'Open')
+      .then((openChoice) => {
+        if (openChoice === 'Open') {
+          void openWorkspaceFile(rawPath, target);
+        }
+      });
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    output?.appendLine(`[AI Assistant] apply file failed: ${message}`);
+    void vscode.window.showErrorMessage(`AI Assistant: cannot write ${rawPath}: ${message}`);
+    return false;
+  }
 }
 
 async function openWorkspaceFile(rawPath: string, absPath?: string): Promise<void> {
@@ -907,15 +1586,194 @@ async function openWorkspaceFile(rawPath: string, absPath?: string): Promise<voi
   );
 }
 
-async function insertIntoEditor(text: string): Promise<void> {
+async function insertIntoEditor(text: string): Promise<boolean> {
   if (!text) {
-    return;
+    return false;
   }
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
+    void vscode.window.showWarningMessage('AI Assistant: open a file to insert the answer.');
+    return false;
+  }
+  return editor.edit((builder) => builder.replace(editor.selection, text));
+}
+
+function installBackendDependencies(context: vscode.ExtensionContext): void {
+  const root = resolveBackendRoot(context);
+  const requirements = path.join(root, 'requirements.txt');
+  if (!fs.existsSync(requirements)) {
+    void vscode.window.showWarningMessage(
+      `AI Assistant: requirements.txt not found in ${root}.`
+    );
     return;
   }
-  await editor.edit((builder) => builder.replace(editor.selection, text));
+  const python = cfg().get<string>('pythonPath', 'python');
+  const terminal = vscode.window.createTerminal({
+    name: 'AI Assistant: backend dependencies',
+  });
+  terminal.show();
+  terminal.sendText(`"${python}" -m pip install -r "${requirements}"`);
+  void vscode.window.showInformationMessage(
+    'Installing Python dependencies in the terminal. Reload VS Code when it finishes.'
+  );
+}
+
+async function runSetupWizard(context: vscode.ExtensionContext): Promise<void> {
+  const current = cfg();
+  const providerPick = await vscode.window.showQuickPick(
+    [
+      { label: 'Auto', description: 'DeepSeek if a key is set, otherwise free', value: 'auto' },
+      { label: 'GPT 6 Astra', description: 'DeepSeek persona with tools and file editing', value: 'deepseek' },
+      { label: 'GPT 5.6 Terra', description: 'Free provider with no conversation memory', value: 'free' },
+    ],
+    { title: 'AI Assistant: provider', placeHolder: `Current: ${current.get('provider', 'auto')}` }
+  );
+  if (!providerPick) {
+    return;
+  }
+  const model = await vscode.window.showQuickPick(['deepseek-flash', 'deepseek-v4-pro'], {
+    title: 'AI Assistant: DeepSeek model',
+    placeHolder: `Current: ${current.get('model', 'deepseek-flash')}`,
+  });
+  if (!model) {
+    return;
+  }
+  const freeProvider = await vscode.window.showQuickPick(
+    [
+      'freedeepseek',
+      'google',
+      'gemini',
+      'openrouter',
+      'groq',
+      'ollama',
+      'pollinations',
+      'openai',
+    ],
+    {
+      title: 'AI Assistant: free provider',
+      placeHolder: `Current: ${current.get('freeProvider', 'freedeepseek')}`,
+    }
+  );
+  if (!freeProvider) {
+    return;
+  }
+  const effort = await vscode.window.showQuickPick(['auto', 'none', 'low', 'medium', 'high'], {
+    title: 'AI Assistant: reasoning level',
+    placeHolder: `Current: ${current.get('reasoningEffort', 'medium')}`,
+  });
+  if (!effort) {
+    return;
+  }
+
+  const envFile = configEnvFile(context);
+  const projectRoot = resolveBackendRoot(context);
+  const existing = fs.existsSync(envFile) ? readEnvFile(envFile) : readDotEnv(projectRoot);
+  const storedDeepseekKey = await context.secrets.get('aiAssistant.deepseekApiKey');
+  const storedFreeKey = await context.secrets.get('aiAssistant.freeApiKey');
+
+  const deepseekKey = await vscode.window.showInputBox({
+    title: 'DeepSeek API key',
+    prompt: 'Leave empty to keep the current key',
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (deepseekKey === undefined) {
+    return;
+  }
+  const freeKey = await vscode.window.showInputBox({
+    title: 'Free provider API key',
+    prompt: 'Leave empty to keep the current key',
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (freeKey === undefined) {
+    return;
+  }
+  const authInput = await vscode.window.showInputBox({
+    title: 'Local auth token',
+    prompt: 'Leave empty to keep the current token',
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (authInput === undefined) {
+    return;
+  }
+  const pythonPath = await vscode.window.showInputBox({
+    title: 'Python executable',
+    value: current.get('pythonPath', 'python'),
+    ignoreFocusOut: true,
+  });
+  if (pythonPath === undefined) {
+    return;
+  }
+  const backendRoot = await vscode.window.showInputBox({
+    title: 'Backend folder',
+    prompt: 'Leave empty to use the backend bundled with the extension',
+    value: current.get('backendRoot', ''),
+    ignoreFocusOut: true,
+  });
+  if (backendRoot === undefined) {
+    return;
+  }
+  const contextLimit = await vscode.window.showInputBox({
+    title: 'Context window limit (tokens)',
+    value: String(current.get('contextLimit', 1000000)),
+    ignoreFocusOut: true,
+    validateInput: (value) => (/^\d+$/.test(value.trim()) ? undefined : 'Enter a positive number'),
+  });
+  if (contextLimit === undefined) {
+    return;
+  }
+
+  const effectiveDeepseekKey =
+    deepseekKey.trim() || storedDeepseekKey || existing.DEEPSEEK_API_KEY || '';
+  const effectiveFreeKey = freeKey.trim() || storedFreeKey || existing.FREE_API_KEY || '';
+  const effectiveAuth =
+    authInput.trim() || current.get<string>('authToken', '') || existing.AUTH_TOKEN || '';
+  const limit = Math.max(Number(contextLimit) || 1000000, 1);
+
+  await current.update('provider', providerPick.value, vscode.ConfigurationTarget.Global);
+  await current.update('model', model, vscode.ConfigurationTarget.Global);
+  await current.update('freeProvider', freeProvider, vscode.ConfigurationTarget.Global);
+  await current.update('reasoningEffort', effort, vscode.ConfigurationTarget.Global);
+  await current.update('pythonPath', pythonPath.trim() || 'python', vscode.ConfigurationTarget.Global);
+  await current.update('backendRoot', backendRoot.trim(), vscode.ConfigurationTarget.Global);
+  await current.update('contextLimit', limit, vscode.ConfigurationTarget.Global);
+  if (effectiveAuth) {
+    await current.update('authToken', effectiveAuth, vscode.ConfigurationTarget.Global);
+  }
+  if (deepseekKey.trim()) {
+    await context.secrets.store('aiAssistant.deepseekApiKey', deepseekKey.trim());
+  }
+  if (freeKey.trim()) {
+    await context.secrets.store('aiAssistant.freeApiKey', freeKey.trim());
+  }
+
+  writeEnvFile(envFile, {
+    DEEPSEEK_API_KEY: effectiveDeepseekKey,
+    DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+    DEEPSEEK_MODEL: model,
+    PROVIDER: providerPick.value,
+    FREE_PROVIDER: freeProvider,
+    FREE_API_KEY: effectiveFreeKey,
+    REASONING_EFFORT: effort,
+    CONTEXT_LIMIT: String(limit),
+    ASSISTANT_NAME: 'GPT 6 Astra',
+    AUTH_TOKEN: effectiveAuth,
+    HOST: '127.0.0.1',
+    PORT: String(current.get('port', 8765)),
+  });
+
+  void vscode.window.showInformationMessage(
+    'AI Assistant settings saved. Restarting the local backend...'
+  );
+  stopBackend();
+  try {
+    await startBackend(context);
+    await ensureFreeProxy();
+  } catch (err) {
+    reportError('restart after setup', err);
+  }
 }
 
 async function runPreset(prompt: string): Promise<void> {

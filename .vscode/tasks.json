@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build: extension",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["--prefix", "client-vscode", "run", "compile"],
+      "problemMatcher": ["$tsc"],
+      "group": "build"
+    }
+  ]
+}

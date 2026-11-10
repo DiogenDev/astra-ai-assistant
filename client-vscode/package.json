@@ -1,13 +1,15 @@
 {
   "name": "ai-assistant-deepseek",
-  "displayName": "AI Assistant (DeepSeek)",
+  "displayName": "Astra AI Assistant",
   "description": "Copilot-style inline completions and an agentic chat panel powered by DeepSeek.",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
@@ -15,20 +17,35 @@
     }
   },
   "activationEvents": [
-    "onStartupFinished",
-    "onView:aiAssistant.chatView",
-    "onCommand:aiAssistant.openChat",
-    "onCommand:aiAssistant.explainSelection",
-    "onCommand:aiAssistant.fixSelection",
-    "onCommand:aiAssistant.runInlineRequest"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      { "command": "aiAssistant.openChat", "title": "AI: Open Chat" },
-      { "command": "aiAssistant.explainSelection", "title": "AI: Explain Selection" },
-      { "command": "aiAssistant.fixSelection", "title": "AI: Fix Selection" },
-      { "command": "aiAssistant.runInlineRequest", "title": "AI: Run Inline Request" }
+      {
+        "command": "aiAssistant.openChat",
+        "title": "AI: Open Chat"
+      },
+      {
+        "command": "aiAssistant.explainSelection",
+        "title": "AI: Explain Selection"
+      },
+      {
+        "command": "aiAssistant.fixSelection",
+        "title": "AI: Fix Selection"
+      },
+      {
+        "command": "aiAssistant.runInlineRequest",
+        "title": "AI: Run Inline Request"
+      },
+      {
+        "command": "aiAssistant.setup",
+        "title": "AI: Setup / Settings"
+      },
+      {
+        "command": "aiAssistant.installDeps",
+        "title": "AI: Install Backend Dependencies"
+      }
     ],
     "keybindings": [
       {
@@ -109,9 +126,65 @@
           "minimum": 500,
           "description": "How long you must stop typing before an inline request runs (ms)."
         },
+        "aiAssistant.autoStartFreeAi": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the FreeDeepseekAPI proxy automatically when the extension activates (regardless of the chat provider)."
+        },
+        "aiAssistant.freeDeepseekRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Folder containing FreeDeepseekAPI (server.js). Empty = %USERPROFILE%\\Documents\\GitHub\\FreeDeepseekAPI."
+        },
+        "aiAssistant.nodePath": {
+          "type": "string",
+          "default": "node",
+          "description": "Node.js executable used to start the FreeDeepseekAPI proxy."
+        },
+        "aiAssistant.provider": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "deepseek",
+            "free"
+          ],
+          "enumDescriptions": [
+            "DeepSeek if a key is configured, otherwise the free provider.",
+            "Always use DeepSeek (requires DEEPSEEK_API_KEY).",
+            "Always use the free provider: GPT 5.6 Terra, no conversation memory."
+          ],
+          "default": "auto",
+          "description": "Which backend to use for the chat."
+        },
+        "aiAssistant.freeProvider": {
+          "type": "string",
+          "enum": [
+            "freedeepseek",
+            "google",
+            "gemini",
+            "openrouter",
+            "groq",
+            "ollama",
+            "pollinations",
+            "openai"
+          ],
+          "default": "freedeepseek",
+          "description": "Free provider used when the chat provider is free."
+        },
+        "aiAssistant.contextLimit": {
+          "type": "number",
+          "default": 1000000,
+          "description": "Context window limit in tokens, used by the Context panel."
+        },
         "aiAssistant.reasoningEffort": {
           "type": "string",
-          "enum": ["auto", "none", "low", "medium", "high"],
+          "enum": [
+            "auto",
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
           "enumDescriptions": [
             "Use the provider default (thinking enabled).",
             "Disable reasoning for the fastest answers.",
@@ -125,7 +198,7 @@
         "aiAssistant.model": {
           "type": "string",
           "default": "deepseek-flash",
-          "description": "Display label for the model (actual model is read from .env)."
+          "description": "DeepSeek model used by the backend (deepseek-flash or deepseek-v4-pro)."
         }
       }
     }
@@ -133,11 +206,15 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
+    "pretest": "tsc -p ./",
+    "test": "node --test",
+    "prepackage": "node scripts/prepare-vsix.js",
     "package": "npx --yes @vscode/vsce package --no-dependencies --out ai-assistant.vsix"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "jsdom": "^24.0.0",
     "typescript": "^5.4.0"
   }
 }

@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension (client-vscode)",
+      "type": "extensionHost",
+      "request": "launch",
+      "noDebug": true,
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/client-vscode",
+        "--disable-extensions"
+      ],
+      "outFiles": ["${workspaceFolder}/client-vscode/out/**/*.js"],
+      "preLaunchTask": "build: extension"
+    }
+  ]
+}

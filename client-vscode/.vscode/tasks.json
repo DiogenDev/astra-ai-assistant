@@ -2,11 +2,12 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "compile",
+      "label": "build: extension",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["run", "compile"],
       "problemMatcher": ["$tsc"],
-      "group": "build",
-      "label": "npm: compile"
+      "group": "build"
     }
   ]
 }
