@@ -11,3 +11,4 @@ app.py
 templates/**
 index.html
 .pytest_cache/**
+test_*.py

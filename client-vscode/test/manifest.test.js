@@ -19,6 +19,7 @@ test('manifest: commands are declared', () => {
     'aiAssistant.fixSelection',
     'aiAssistant.runInlineRequest',
     'aiAssistant.setup',
+    'aiAssistant.setupAdvanced',
     'aiAssistant.installDeps',
   ]) {
     assert.ok(commands.includes(expected), expected);
@@ -39,6 +40,7 @@ test('manifest: expected settings are present', () => {
     'aiAssistant.freeDeepseekRoot',
     'aiAssistant.nodePath',
     'aiAssistant.autoApplyFiles',
+    'aiAssistant.openCreatedFiles',
     'aiAssistant.reasoningEffort',
     'aiAssistant.inlineRequest.enabled',
     'aiAssistant.inlineRequest.auto',

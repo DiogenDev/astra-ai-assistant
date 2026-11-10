@@ -2,7 +2,7 @@
   "name": "ai-assistant-deepseek",
   "displayName": "Astra AI Assistant",
   "description": "Copilot-style inline completions and an agentic chat panel powered by DeepSeek.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -45,6 +45,10 @@
       {
         "command": "aiAssistant.installDeps",
         "title": "AI: Install Backend Dependencies"
+      },
+      {
+        "command": "aiAssistant.setupAdvanced",
+        "title": "AI: Advanced Settings"
       }
     ],
     "keybindings": [
@@ -175,6 +179,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically create files from file= code blocks in assistant answers. Disable to use the Apply button instead."
+        },
+        "aiAssistant.openCreatedFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open created/updated files in the editor automatically after applying them."
         },
         "aiAssistant.contextLimit": {
           "type": "number",

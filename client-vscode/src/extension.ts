@@ -261,7 +261,10 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
     })
   );
   safeRegister('command setup', context, () =>
-    vscode.commands.registerCommand('aiAssistant.setup', () => runSetupWizard(context))
+    vscode.commands.registerCommand('aiAssistant.setup', () => runQuickSetup(context))
+  );
+  safeRegister('command setupAdvanced', context, () =>
+    vscode.commands.registerCommand('aiAssistant.setupAdvanced', () => runSetupWizard(context))
   );
   safeRegister('command installDeps', context, () =>
     vscode.commands.registerCommand('aiAssistant.installDeps', () =>
@@ -351,16 +354,20 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
     vscode.window.onDidChangeActiveTextEditor(() => cancelInlineTimer())
   );
 
-  if (vscode.workspace.isTrusted !== false && !context.globalState.get<boolean>('aiAssistant.welcomed')) {
-    void context.globalState.update('aiAssistant.welcomed', true);
+  if (
+    vscode.workspace.isTrusted !== false &&
+    !context.globalState.get<boolean>('aiAssistant.setupPrompted')
+  ) {
+    void context.globalState.update('aiAssistant.setupPrompted', true);
     void vscode.window
       .showInformationMessage(
-        'GPT 6 Astra is installed. Open the chat, or write "# ai: ..." in a comment and pause for 3 seconds.',
-        'Open Chat'
+        'Astra AI Assistant is installed. Set up a model to start.',
+        'Set up',
+        'Later'
       )
       .then((choice) => {
-        if (choice === 'Open Chat') {
-          void vscode.commands.executeCommand('aiAssistant.openChat');
+        if (choice === 'Set up') {
+          void runQuickSetup(context);
         }
       });
   }
@@ -1500,6 +1507,7 @@ async function autoApplyWorkspaceFiles(
   files: unknown
 ): Promise<{ paths: string[]; overwrote: string[]; errors: string[] }> {
   const result = { paths: [] as string[], overwrote: [] as string[], errors: [] as string[] };
+  const writtenTargets: string[] = [];
   if (!cfg().get<boolean>('autoApplyFiles', true)) {
     return result;
   }
@@ -1529,6 +1537,7 @@ async function autoApplyWorkspaceFiles(
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, content, 'utf8');
       result.paths.push(rawPath);
+      writtenTargets.push(target);
       if (existed) {
         result.overwrote.push(rawPath);
       }
@@ -1542,6 +1551,21 @@ async function autoApplyWorkspaceFiles(
     void vscode.commands
       .executeCommand('workbench.files.action.refreshFilesExplorer')
       .then(undefined, () => undefined);
+  }
+  if (writtenTargets.length && cfg().get<boolean>('openCreatedFiles', true)) {
+    let first = true;
+    for (const target of writtenTargets.slice(0, 5)) {
+      try {
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
+        await vscode.window.showTextDocument(document, {
+          preview: false,
+          preserveFocus: !first,
+        });
+        first = false;
+      } catch {
+        // ignore individual open failures
+      }
+    }
   }
   return result;
 }
@@ -1578,6 +1602,14 @@ async function applyWorkspaceFile(rawPath: string, content: string): Promise<boo
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, content, 'utf8');
     output?.appendLine(`[AI Assistant] applied file: ${target}`);
+    if (cfg().get<boolean>('openCreatedFiles', true)) {
+      try {
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
+        await vscode.window.showTextDocument(document, { preview: false });
+      } catch {
+        // ignore
+      }
+    }
     void vscode.window
       .showInformationMessage(`Saved ${rawPath}`, 'Open')
       .then((openChoice) => {
@@ -1659,6 +1691,190 @@ async function insertIntoEditor(text: string): Promise<boolean> {
     return false;
   }
   return editor.edit((builder) => builder.replace(editor.selection, text));
+}
+
+async function ensureBackendDependencies(context: vscode.ExtensionContext): Promise<boolean> {
+  const root = resolveBackendRoot(context);
+  const requirements = path.join(root, 'requirements.txt');
+  if (!fs.existsSync(requirements)) {
+    void vscode.window.showWarningMessage(
+      `AI Assistant: requirements.txt not found in ${root}.`
+    );
+    return false;
+  }
+  const python = cfg().get<string>('pythonPath', 'python');
+  const available = await new Promise<boolean>((resolve) => {
+    const check = cp.spawn(
+      python,
+      ['-c', 'import fastapi, uvicorn, openai, dotenv, httpx'],
+      { windowsHide: true }
+    );
+    check.on('error', () => resolve(false));
+    check.on('exit', (code) => resolve(code === 0));
+  });
+  if (available) {
+    return true;
+  }
+  const choice = await vscode.window.showInformationMessage(
+    'Astra needs Python backend dependencies. Install them now?',
+    'Install',
+    'Cancel'
+  );
+  if (choice !== 'Install') {
+    return false;
+  }
+  const installed = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Installing Astra backend dependencies...',
+    },
+    () =>
+      new Promise<boolean>((resolve) => {
+        const child = cp.spawn(
+          python,
+          ['-m', 'pip', 'install', '-r', requirements],
+          { windowsHide: true }
+        );
+        child.stdout?.on('data', (data: Buffer) => output.append(data.toString()));
+        child.stderr?.on('data', (data: Buffer) => output.append(data.toString()));
+        child.on('error', (err) => {
+          output.appendLine(`[AI Assistant] pip error: ${err.message}`);
+          resolve(false);
+        });
+        child.on('exit', (code) => resolve(code === 0));
+      })
+  );
+  if (!installed) {
+    void vscode.window.showErrorMessage(
+      'AI Assistant: dependency installation failed. See Output -> AI Assistant.'
+    );
+    return false;
+  }
+  return true;
+}
+
+async function runQuickSetup(context: vscode.ExtensionContext): Promise<void> {
+  const choice = await vscode.window.showQuickPick(
+    [
+      {
+        label: 'DeepSeek (GPT 6 Astra)',
+        description: 'Enter a DeepSeek API key',
+        value: 'deepseek',
+      },
+      {
+        label: 'Free (GPT 5.6 Terra)',
+        description: 'No DeepSeek key; use a free provider',
+        value: 'free',
+      },
+      { label: 'Advanced setup...', description: 'All options', value: 'advanced' },
+    ],
+    { title: 'Astra: quick setup', placeHolder: 'Choose how to power the assistant' }
+  );
+  if (!choice) {
+    return;
+  }
+  if (choice.value === 'advanced') {
+    await runSetupWizard(context);
+    return;
+  }
+  if (!(await ensureBackendDependencies(context))) {
+    return;
+  }
+
+  const current = cfg();
+  const envFile = configEnvFile(context);
+  const projectRoot = resolveBackendRoot(context);
+  const existing = fs.existsSync(envFile) ? readEnvFile(envFile) : readDotEnv(projectRoot);
+  let deepseekKey =
+    existing.DEEPSEEK_API_KEY ||
+    (await context.secrets.get('aiAssistant.deepseekApiKey')) ||
+    '';
+  let freeKey =
+    existing.FREE_API_KEY || (await context.secrets.get('aiAssistant.freeApiKey')) || '';
+  const authToken = current.get<string>('authToken', '') || existing.AUTH_TOKEN || '';
+  const model = current.get<string>('model', 'deepseek-flash');
+  const effort = current.get<string>('reasoningEffort', 'medium');
+  let provider = 'auto';
+  let freeProvider = current.get<string>('freeProvider', 'freedeepseek');
+
+  if (choice.value === 'deepseek') {
+    const key = await vscode.window.showInputBox({
+      title: 'DeepSeek API key',
+      prompt: 'Get one at https://platform.deepseek.com/api_keys',
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (key === undefined) {
+      return;
+    }
+    if (!key.trim()) {
+      void vscode.window.showWarningMessage('A DeepSeek key is required for this option.');
+      return;
+    }
+    deepseekKey = key.trim();
+    provider = 'deepseek';
+    await context.secrets.store('aiAssistant.deepseekApiKey', deepseekKey);
+  } else {
+    provider = 'free';
+    const freeChoice = await vscode.window.showQuickPick(
+      ['freedeepseek', 'google', 'gemini', 'openrouter', 'groq', 'ollama', 'pollinations'],
+      {
+        title: 'Free provider',
+        placeHolder: `Current: ${freeProvider}`,
+      }
+    );
+    if (!freeChoice) {
+      return;
+    }
+    freeProvider = freeChoice;
+    if (freeProvider === 'gemini' || freeProvider === 'openrouter' || freeProvider === 'groq') {
+      const key = await vscode.window.showInputBox({
+        title: 'Free provider API key',
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (key === undefined) {
+        return;
+      }
+      if (key.trim()) {
+        freeKey = key.trim();
+        await context.secrets.store('aiAssistant.freeApiKey', freeKey);
+      }
+    }
+  }
+
+  const limit = current.get<number>('contextLimit', 1000000);
+  await current.update('provider', provider, vscode.ConfigurationTarget.Global);
+  await current.update('model', model, vscode.ConfigurationTarget.Global);
+  await current.update('freeProvider', freeProvider, vscode.ConfigurationTarget.Global);
+  await current.update('reasoningEffort', effort, vscode.ConfigurationTarget.Global);
+  await current.update('autoApplyFiles', true, vscode.ConfigurationTarget.Global);
+  await current.update('openCreatedFiles', true, vscode.ConfigurationTarget.Global);
+
+  writeEnvFile(envFile, {
+    ...existing,
+    DEEPSEEK_API_KEY: deepseekKey,
+    DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+    DEEPSEEK_MODEL: model,
+    PROVIDER: provider,
+    FREE_PROVIDER: freeProvider,
+    FREE_API_KEY: freeKey,
+    REASONING_EFFORT: effort,
+    CONTEXT_LIMIT: String(limit),
+    ASSISTANT_NAME: 'GPT 6 Astra',
+    AUTH_TOKEN: authToken,
+    HOST: '127.0.0.1',
+    PORT: String(current.get('port', 8765)),
+  });
+
+  void vscode.window.showInformationMessage('Astra is ready. Starting the backend...');
+  stopBackend();
+  try {
+    await startBackend(context);
+    await ensureFreeProxy();
+  } catch (err) {
+    reportError('quick setup restart', err);
+  }
 }
 
 function installBackendDependencies(context: vscode.ExtensionContext): void {

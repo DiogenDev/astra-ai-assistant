@@ -103,6 +103,7 @@ def update_vscode_settings(values: dict[str, str]) -> None:
     data["aiAssistant.autoStartBackend"] = True
     data["aiAssistant.autoStartFreeAi"] = True
     data["aiAssistant.autoApplyFiles"] = True
+    data["aiAssistant.openCreatedFiles"] = True
     VSCODE_SETTINGS.write_text(
         json.dumps(data, ensure_ascii=False, indent=4),
         encoding="utf-8",

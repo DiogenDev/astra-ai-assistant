@@ -30,10 +30,12 @@ writes configuration to the repo `.env` and to VS Code's global storage
 
 1. Install `client-vscode/ai-assistant.vsix` (`Extensions` -> `...` ->
    `Install from VSIX...`).
-2. Run **AI: Install Backend Dependencies** (Python 3.10+ with pip required).
-3. Run **AI: Setup / Settings** and enter your keys/providers. Keys are stored
-   in VS Code SecretStorage and the local config file.
-4. Open your project, trust it, and use the chat.
+2. On first start click **Set up** in the notification (or run **AI: Setup /
+   Settings**). Quick setup installs missing Python dependencies and asks for
+   one key; **AI: Advanced Settings** exposes every option.
+3. Open your project, trust it, and use the chat.
+
+Keys are stored in VS Code SecretStorage and the local config file.
 
 The VSIX bundles the Python backend. File tools are sandboxed to the open
 workspace and configuration lives outside the project, so installing the
@@ -305,10 +307,11 @@ print("hello")
 ````
 
 The extension creates missing directories, writes the files inside the open
-workspace and refreshes the Explorer, so they appear immediately. Existing files
-are overwritten in auto mode. Set `aiAssistant.autoApplyFiles` to `false` to get
-manual **Apply** buttons with confirmation instead. Answers end with a `Files:`
-section listing every file and directory.
+workspace, refreshes the Explorer **and opens the new files in the editor**
+(`aiAssistant.openCreatedFiles`). Existing files are overwritten in auto mode.
+Set `aiAssistant.autoApplyFiles` to `false` to get manual **Apply** buttons with
+confirmation instead. Answers end with a `Files:` section listing every file and
+directory.
 
 Free chat is **stateless for the model**: it only sees the latest message, no
 model memory. The UI keeps multiple local chats (persisted in the webview); use
@@ -380,6 +383,7 @@ in `.env`. Stats are in-memory for the backend process; reset with
 | `aiAssistant.autoStartBackend` | `true` | Spawn Python automatically; set `false` for Docker |
 | `aiAssistant.autoStartFreeAi` | `true` | Start FreeDeepseekAPI with the extension |
 | `aiAssistant.autoApplyFiles` | `true` | Auto-create files from `file=` blocks (disable for manual Apply) |
+| `aiAssistant.openCreatedFiles` | `true` | Open created/updated files automatically in the editor |
 | `aiAssistant.freeDeepseekRoot` | `""` | FreeDeepseekAPI folder; empty = `%USERPROFILE%\Documents\GitHub\FreeDeepseekAPI` |
 | `aiAssistant.nodePath` | `node` | Node.js used to start the free proxy |
 | `aiAssistant.apiUrl` | `http://127.0.0.1:8765` | Backend URL |
