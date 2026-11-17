@@ -8,6 +8,8 @@ import * as vscode from 'vscode';
 
 let backendProc: cp.ChildProcess | undefined;
 let chatProvider: ChatViewProvider | undefined;
+let activeContext: vscode.ExtensionContext | undefined;
+let freeSetupPrompted = false;
 let output: vscode.OutputChannel;
 let statusBar: vscode.StatusBarItem;
 let dotenvToken = '';
@@ -233,6 +235,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 async function startExtension(context: vscode.ExtensionContext): Promise<void> {
+  activeContext = context;
   output = vscode.window.createOutputChannel('Deepseek AI');
   context.subscriptions.push(output);
   output.appendLine('[Deepseek AI] activating...');
@@ -265,6 +268,9 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
   );
   safeRegister('command setupAdvanced', context, () =>
     vscode.commands.registerCommand('aiAssistant.setupAdvanced', () => runSetupWizard(context))
+  );
+  safeRegister('command enableFree', context, () =>
+    vscode.commands.registerCommand('aiAssistant.enableFree', () => enableFreeDeepSeek(context))
   );
   safeRegister('command installDeps', context, () =>
     vscode.commands.registerCommand('aiAssistant.installDeps', () =>
@@ -509,6 +515,7 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
   env.FREE_PROVIDER = cfg().get<string>('freeProvider', 'freedeepseek');
   env.REASONING_EFFORT = cfg().get<string>('reasoningEffort', 'medium');
   env.CONTEXT_LIMIT = String(cfg().get<number>('contextLimit', 1000000));
+  env.MAX_AGENT_STEPS = String(cfg().get<number>('maxAgentSteps', 16));
   env.ASSISTANT_NAME = 'deepseek v4.1 flash 1017';
 
   output.appendLine(`[Deepseek AI] starting backend: ${python} -m uvicorn backend.main:app --port ${port}`);
@@ -531,12 +538,269 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
   }
 }
 
+function freeProxyStorageRoot(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, 'free-proxy');
+}
+
+function bundledFreeProxyRoot(context: vscode.ExtensionContext): string {
+  return path.join(context.extensionPath, 'free-proxy');
+}
+
+function freeProxyVersion(root: string): string {
+  try {
+    return fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function prepareBundledFreeProxy(context: vscode.ExtensionContext): string | null {
+  const source = bundledFreeProxyRoot(context);
+  if (!fs.existsSync(path.join(source, 'server.js'))) {
+    return null;
+  }
+  const target = freeProxyStorageRoot(context);
+  const sourceVersion = freeProxyVersion(source) || '1';
+  if (
+    !fs.existsSync(path.join(target, 'server.js')) ||
+    freeProxyVersion(target) !== sourceVersion
+  ) {
+    fs.mkdirSync(target, { recursive: true });
+    fs.cpSync(source, target, { recursive: true, force: true });
+    output.appendLine(`[Deepseek AI] prepared bundled free proxy at ${target}`);
+  }
+  return target;
+}
+
 function resolveFreeDeepseekRoot(): string {
   const configured = cfg().get<string>('freeDeepseekRoot', '').trim();
   if (configured) {
     return configured;
   }
+  if (activeContext) {
+    const stored = freeProxyStorageRoot(activeContext);
+    if (fs.existsSync(path.join(stored, 'server.js'))) {
+      return stored;
+    }
+    const bundled = bundledFreeProxyRoot(activeContext);
+    if (fs.existsSync(path.join(bundled, 'server.js'))) {
+      return stored;
+    }
+  }
   return path.join(os.homedir(), 'Documents', 'GitHub', 'FreeDeepseekAPI');
+}
+
+function detectChromePath(): string {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          path.join(process.env.PROGRAMFILES || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          path.join(
+            process.env['PROGRAMFILES(X86)'] || '',
+            'Google',
+            'Chrome',
+            'Application',
+            'chrome.exe'
+          ),
+          path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          path.join(process.env.PROGRAMFILES || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          path.join(
+            process.env['PROGRAMFILES(X86)'] || '',
+            'Microsoft',
+            'Edge',
+            'Application',
+            'msedge.exe'
+          ),
+        ]
+      : process.platform === 'darwin'
+        ? [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+            '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          ]
+        : [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/microsoft-edge',
+          ];
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || '';
+}
+
+function spawnElectronNode(
+  script: string,
+  options: cp.SpawnOptions = {},
+  args: string[] = []
+): cp.ChildProcess {
+  const env = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: '1',
+    ...(options.env || {}),
+  };
+  return cp.spawn(process.execPath, [script, ...args], {
+    ...options,
+    env,
+    windowsHide: true,
+  });
+}
+
+async function runFreeAuth(
+  context: vscode.ExtensionContext,
+  root: string
+): Promise<boolean> {
+  const authPath = path.join(root, 'deepseek-auth.json');
+  if (fs.existsSync(authPath)) {
+    return true;
+  }
+  const script = path.join(root, 'scripts', 'deepseek_chrome_auth.js');
+  if (!fs.existsSync(script)) {
+    void vscode.window.showErrorMessage(
+      'Free DeepSeek setup files are missing. Reinstall the extension.'
+    );
+    return false;
+  }
+
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Deepseek AI: free DeepSeek login',
+      cancellable: false,
+    },
+    async (progress) => {
+      progress.report({
+        message:
+          'Chrome will open. Log in at chat.deepseek.com; setup continues automatically.',
+      });
+      const chrome = detectChromePath();
+      const child = spawnElectronNode(script, {
+        cwd: root,
+        env: {
+          DEEPSEEK_AUTH_AUTO: '1',
+          DEEPSEEK_AUTH_PATH: authPath,
+          NON_INTERACTIVE: '1',
+          ...(chrome ? { CHROME_PATH: chrome } : {}),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      child.stdout?.on('data', (data: Buffer) =>
+        output.append(`[free login] ${data.toString()}`)
+      );
+      child.stderr?.on('data', (data: Buffer) =>
+        output.append(`[free login] ${data.toString()}`)
+      );
+
+      const exitCode = await new Promise<number | null>((resolve) => {
+        let settled = false;
+        const finish = (code: number | null) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve(code);
+        };
+        const timer = setTimeout(() => {
+          try {
+            child.kill();
+          } catch {
+            // ignore
+          }
+          finish(null);
+        }, 6 * 60 * 1000);
+        child.on('error', (error) => {
+          output.appendLine(`[free login] ${error.message}`);
+          finish(null);
+        });
+        child.on('exit', (code) => finish(code));
+      });
+
+      if (exitCode === 0 && fs.existsSync(authPath)) {
+        output.appendLine('[Deepseek AI] free DeepSeek login saved.');
+        return true;
+      }
+      output.appendLine(
+        `[Deepseek AI] free DeepSeek login did not complete (exit ${exitCode ?? 'timeout'}).`
+      );
+      void vscode.window
+        .showErrorMessage(
+          'Free DeepSeek login did not complete. Log in in the Chrome window and try again.',
+          'Open Output'
+        )
+        .then((choice) => {
+          if (choice === 'Open Output') {
+            output.show(true);
+          }
+        });
+      return false;
+    }
+  );
+}
+
+async function enableFreeDeepSeek(context: vscode.ExtensionContext): Promise<void> {
+  if (vscode.workspace.isTrusted === false) {
+    void vscode.window.showWarningMessage(
+      'Trust this workspace before setting up free DeepSeek.'
+    );
+    return;
+  }
+  const root = prepareBundledFreeProxy(context);
+  if (!root) {
+    void vscode.window.showErrorMessage(
+      'The bundled free proxy is missing. Reinstall the extension.'
+    );
+    return;
+  }
+  if (!(await runFreeAuth(context, root))) {
+    return;
+  }
+
+  await cfg().update('freeDeepseekRoot', root, vscode.ConfigurationTarget.Global);
+  await cfg().update('freeProvider', 'freedeepseek', vscode.ConfigurationTarget.Global);
+  await cfg().update('provider', 'free', vscode.ConfigurationTarget.Global);
+  await cfg().update('autoStartFreeAi', true, vscode.ConfigurationTarget.Global);
+  chatProvider?.syncSettings();
+
+  if (!(await fetchHealth())) {
+    try {
+      await startBackend(context);
+    } catch (error) {
+      reportError('backend startup for free mode', error);
+    }
+  }
+  if (!(await fetchHealth())) {
+    void vscode.window.showErrorMessage(
+      'Free proxy is ready, but the Python backend did not start. Install Python 3.10+ and run Deepseek: Install Backend Dependencies.',
+      'Open Output'
+    ).then((choice) => {
+      if (choice === 'Open Output') {
+        output.show(true);
+      }
+    });
+    return;
+  }
+  await ensureFreeProxy();
+  if (await waitForFreeProxy(20)) {
+    void vscode.window
+      .showInformationMessage(
+        'Free DeepSeek is ready. The chat is set to deepseek free.',
+        'Open Chat'
+      )
+      .then((choice) => {
+        if (choice === 'Open Chat') {
+          void vscode.commands.executeCommand('aiAssistant.openChat');
+        }
+      });
+  } else {
+    void vscode.window.showWarningMessage(
+      'Free proxy did not become ready. Check Output → Deepseek AI.',
+      'Open Output'
+    ).then((choice) => {
+      if (choice === 'Open Output') {
+        output.show(true);
+      }
+    });
+  }
 }
 
 async function freeProxyHealthy(): Promise<boolean> {
@@ -574,31 +838,40 @@ async function ensureFreeProxy(): Promise<void> {
     return;
   }
 
-  const root = resolveFreeDeepseekRoot();
+  let root = resolveFreeDeepseekRoot();
+  if (!fs.existsSync(path.join(root, 'server.js')) && activeContext) {
+    const prepared = prepareBundledFreeProxy(activeContext);
+    if (prepared) {
+      root = prepared;
+    }
+  }
   const serverFile = path.join(root, 'server.js');
   if (!fs.existsSync(serverFile)) {
     output.appendLine(`[Deepseek AI] FreeDeepseekAPI not found at ${root}.`);
     void vscode.window.showWarningMessage(
-      `Free mode needs FreeDeepseekAPI at ${root}. Run start-free-ai.bat first.`
+      'Free DeepSeek setup files are missing. Reinstall the extension.'
     );
     return;
   }
-  if (!fs.existsSync(path.join(root, 'deepseek-auth.json'))) {
+  const authPath = path.join(root, 'deepseek-auth.json');
+  if (!fs.existsSync(authPath)) {
     output.appendLine('[Deepseek AI] FreeDeepseekAPI has no DeepSeek login yet.');
-    void vscode.window
-      .showWarningMessage(
-        'Free mode needs a one-time DeepSeek login. Run start-free-ai.bat and log in to chat.deepseek.com.',
-        'Open Folder'
-      )
-      .then((choice) => {
-        if (choice === 'Open Folder') {
-          void vscode.env.openExternal(vscode.Uri.file(root));
-        }
-      });
+    if (!freeSetupPrompted && cfg().get<string>('provider', 'auto') === 'free') {
+      freeSetupPrompted = true;
+      void vscode.window
+        .showInformationMessage(
+          'Free DeepSeek needs a one-time login. Set it up now?',
+          'Set up free DeepSeek'
+        )
+        .then((choice) => {
+          if (choice === 'Set up free DeepSeek') {
+            void vscode.commands.executeCommand('aiAssistant.enableFree');
+          }
+        });
+    }
     return;
   }
 
-  const node = cfg().get<string>('nodePath', 'node');
   let outFd: number | 'ignore' = 'ignore';
   let errFd: number | 'ignore' = 'ignore';
   try {
@@ -609,10 +882,14 @@ async function ensureFreeProxy(): Promise<void> {
     errFd = 'ignore';
   }
 
-  const child = cp.spawn(node, ['server.js'], {
+  const child = spawnElectronNode(path.join(root, 'server.js'), {
     cwd: root,
-    env: { ...process.env, NON_INTERACTIVE: '1' },
-    windowsHide: true,
+    env: {
+      NON_INTERACTIVE: '1',
+      HOST: '127.0.0.1',
+      PORT: '9655',
+      DEEPSEEK_AUTH_PATH: authPath,
+    },
     detached: true,
     stdio: ['ignore', outFd, errFd],
   });
@@ -1018,6 +1295,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  syncSettings(): void {
+    this.post({
+      type: 'settings',
+      reasoningEffort: cfg().get<string>('reasoningEffort', 'medium'),
+      provider: cfg().get<string>('provider', 'auto'),
+      autoApplyFiles: cfg().get<boolean>('autoApplyFiles', true),
+    });
+  }
+
   private async handleMessage(message: any): Promise<void> {
     switch (message?.type) {
       case 'ready':
@@ -1025,12 +1311,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           void this.view?.webview.postMessage(item);
         }
         this.pending = [];
-        this.post({
-          type: 'settings',
-          reasoningEffort: cfg().get<string>('reasoningEffort', 'medium'),
-          provider: cfg().get<string>('provider', 'auto'),
-          autoApplyFiles: cfg().get<boolean>('autoApplyFiles', true),
-        });
+        this.syncSettings();
         void this.refreshStats();
         break;
       case 'getStats':
@@ -1862,6 +2143,7 @@ async function runQuickSetup(context: vscode.ExtensionContext): Promise<void> {
     FREE_API_KEY: freeKey,
     REASONING_EFFORT: effort,
     CONTEXT_LIMIT: String(limit),
+    MAX_AGENT_STEPS: String(current.get('maxAgentSteps', 16)),
     ASSISTANT_NAME: 'deepseek v4.1 flash 1017',
     AUTH_TOKEN: authToken,
     HOST: '127.0.0.1',
@@ -1872,7 +2154,11 @@ async function runQuickSetup(context: vscode.ExtensionContext): Promise<void> {
   stopBackend();
   try {
     await startBackend(context);
-    await ensureFreeProxy();
+    if (provider === 'free' && freeProvider === 'freedeepseek') {
+      await enableFreeDeepSeek(context);
+    } else {
+      await ensureFreeProxy();
+    }
   } catch (err) {
     reportError('quick setup restart', err);
   }
@@ -2038,6 +2324,7 @@ async function runSetupWizard(context: vscode.ExtensionContext): Promise<void> {
     FREE_API_KEY: effectiveFreeKey,
     REASONING_EFFORT: effort,
     CONTEXT_LIMIT: String(limit),
+    MAX_AGENT_STEPS: String(current.get('maxAgentSteps', 16)),
     ASSISTANT_NAME: 'deepseek v4.1 flash 1017',
     AUTH_TOKEN: effectiveAuth,
     HOST: '127.0.0.1',

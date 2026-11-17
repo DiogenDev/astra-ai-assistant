@@ -113,8 +113,8 @@ This produces `client-vscode/ai-assistant.vsix`. Install it either via
 code --install-extension ai-assistant.vsix
 ```
 
-The VSIX contains only the extension (the Python backend stays outside it).
-Point the extension at the backend folder in VS Code settings:
+The VSIX bundles the Python backend and the free proxy. `backendRoot` is only
+needed when you deliberately want to use an external backend checkout:
 
 ```json
 {
@@ -222,6 +222,11 @@ The dropdown writes `aiAssistant.provider`; it can also be set in `.env` as `PRO
 - `free` — always free.
 
 ### Main free method: FreeDeepseekAPI (DeepSeek Web proxy)
+
+> For a normal VSIX user, run **Deepseek: Enable Free DeepSeek**. The proxy is
+> bundled, uses VS Code's embedded Node (no Node.js install), opens Chrome/Edge
+> for the one-time login and starts everything automatically. The manual steps
+> below are for development or an external proxy checkout.
 
 [FreeDeepseekAPI](https://github.com/ForgetMeAI/FreeDeepseekAPI) turns your
 logged-in DeepSeek Web account into an OpenAI-compatible endpoint at

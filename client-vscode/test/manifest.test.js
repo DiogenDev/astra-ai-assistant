@@ -21,6 +21,7 @@ test('manifest: commands are declared', () => {
     'aiAssistant.setup',
     'aiAssistant.setupAdvanced',
     'aiAssistant.installDeps',
+    'aiAssistant.enableFree',
   ]) {
     assert.ok(commands.includes(expected), expected);
   }
@@ -42,12 +43,20 @@ test('manifest: expected settings are present', () => {
     'aiAssistant.autoApplyFiles',
     'aiAssistant.openCreatedFiles',
     'aiAssistant.reasoningEffort',
+    'aiAssistant.maxAgentSteps',
     'aiAssistant.inlineRequest.enabled',
     'aiAssistant.inlineRequest.auto',
     'aiAssistant.inlineRequest.idleDelayMs',
   ]) {
     assert.ok(properties[key], key);
   }
+});
+
+test('manifest: bundled free proxy is present without user auth', () => {
+  const root = path.resolve(__dirname, '..', 'free-proxy');
+  assert.ok(fs.existsSync(path.join(root, 'server.js')));
+  assert.ok(fs.existsSync(path.join(root, 'scripts', 'deepseek_chrome_auth.js')));
+  assert.equal(fs.existsSync(path.join(root, 'deepseek-auth.json')), false);
 });
 
 test('manifest: entrypoint and engine are valid', () => {

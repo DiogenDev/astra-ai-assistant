@@ -29,6 +29,72 @@ SYSTEM = (
 )
 
 
+async def _stream_turn(
+    convo: list[dict[str, Any]],
+    on_event: Emitter,
+    effort: str,
+    allow_tools: bool,
+) -> tuple[str, dict[int, dict[str, str]]]:
+    request: dict[str, Any] = dict(
+        model=settings.model,
+        messages=convo,
+        temperature=0.2,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    if allow_tools:
+        request["tools"] = TOOLS
+        request["tool_choice"] = "auto"
+    if effort != "auto":
+        request["reasoning_effort"] = effort
+    try:
+        stream = await get_client().chat.completions.create(**request)
+    except BadRequestError:
+        # Provider does not support the reasoning parameter; retry without it.
+        request.pop("reasoning_effort", None)
+        stream = await get_client().chat.completions.create(**request)
+
+    content_parts: list[str] = []
+    tool_calls: dict[int, dict[str, str]] = {}
+    usage = None
+    saw_reasoning = False
+
+    async for chunk in stream:
+        if getattr(chunk, "usage", None) is not None:
+            usage = chunk.usage
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta is None:
+            continue
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning is None:
+            reasoning = getattr(delta, "reasoning", None)
+        if reasoning:
+            saw_reasoning = True
+            await on_event({"type": "reasoning", "delta": reasoning})
+        if delta.content:
+            content_parts.append(delta.content)
+            await on_event({"type": "text", "delta": delta.content})
+        if delta.tool_calls:
+            for tc in delta.tool_calls:
+                idx = tc.index if tc.index is not None else 0
+                slot = tool_calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if tc.id:
+                    slot["id"] = tc.id
+                if tc.function:
+                    if tc.function.name:
+                        slot["name"] = tc.function.name
+                    if tc.function.arguments:
+                        slot["arguments"] += tc.function.arguments
+
+    if saw_reasoning:
+        await on_event({"type": "reasoning_end"})
+
+    record_usage(usage)
+    return "".join(content_parts), tool_calls
+
+
 async def run_agent(
     messages: list[dict[str, Any]],
     on_event: Emitter,
@@ -37,103 +103,64 @@ async def run_agent(
     effort = resolve_effort(reasoning_effort)
     convo: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}, *messages]
 
-    for _step in range(settings.max_agent_steps):
-        request: dict[str, Any] = dict(
-            model=settings.model,
-            messages=convo,
-            tools=TOOLS,
-            tool_choice="auto",
-            temperature=0.2,
-            stream=True,
-            stream_options={"include_usage": True},
+    for _step in range(max(settings.max_agent_steps, 1)):
+        content, tool_calls = await _stream_turn(convo, on_event, effort, allow_tools=True)
+        if not tool_calls:
+            return
+
+        ordered = [tool_calls[i] for i in sorted(tool_calls)]
+        assistant_calls = [
+            {
+                "id": tc["id"] or f"call_{i}",
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": tc["arguments"] or "{}"},
+            }
+            for i, tc in enumerate(ordered)
+        ]
+        convo.append(
+            {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": assistant_calls,
+            }
         )
-        if effort != "auto":
-            request["reasoning_effort"] = effort
-        try:
-            stream = await get_client().chat.completions.create(**request)
-        except BadRequestError:
-            # Provider does not support the reasoning parameter; retry without it.
-            request.pop("reasoning_effort", None)
-            stream = await get_client().chat.completions.create(**request)
-
-        content_parts: list[str] = []
-        tool_calls: dict[int, dict[str, str]] = {}
-        usage = None
-        saw_reasoning = False
-
-        async for chunk in stream:
-            if getattr(chunk, "usage", None) is not None:
-                usage = chunk.usage
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta is None:
-                continue
-            reasoning = getattr(delta, "reasoning_content", None)
-            if reasoning is None:
-                reasoning = getattr(delta, "reasoning", None)
-            if reasoning:
-                saw_reasoning = True
-                await on_event({"type": "reasoning", "delta": reasoning})
-            if delta.content:
-                content_parts.append(delta.content)
-                await on_event({"type": "text", "delta": delta.content})
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index if tc.index is not None else 0
-                    slot = tool_calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                    if tc.id:
-                        slot["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            slot["name"] = tc.function.name
-                        if tc.function.arguments:
-                            slot["arguments"] += tc.function.arguments
-
-        if saw_reasoning:
-            await on_event({"type": "reasoning_end"})
-
-        record_usage(usage)
-
-        if tool_calls:
-            ordered = [tool_calls[i] for i in sorted(tool_calls)]
-            assistant_calls = [
-                {
-                    "id": tc["id"] or f"call_{i}",
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": tc["arguments"] or "{}"},
-                }
-                for i, tc in enumerate(ordered)
-            ]
+        for i, tc in enumerate(ordered):
+            name = tc["name"]
+            try:
+                args = json.loads(tc["arguments"] or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            await on_event({"type": "tool", "name": name, "args": args})
+            result, tool_events = execute_tool(name, args)
+            for tool_event in tool_events:
+                await on_event(tool_event)
+            await on_event({"type": "tool_result", "name": name, "result": result[:500]})
             convo.append(
                 {
-                    "role": "assistant",
-                    "content": "".join(content_parts),
-                    "tool_calls": assistant_calls,
+                    "role": "tool",
+                    "tool_call_id": assistant_calls[i]["id"],
+                    "content": result,
                 }
             )
-            for i, tc in enumerate(ordered):
-                name = tc["name"]
-                try:
-                    args = json.loads(tc["arguments"] or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                if not isinstance(args, dict):
-                    args = {}
-                await on_event({"type": "tool", "name": name, "args": args})
-                result, tool_events = execute_tool(name, args)
-                for tool_event in tool_events:
-                    await on_event(tool_event)
-                await on_event({"type": "tool_result", "name": name, "result": result[:500]})
-                convo.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": assistant_calls[i]["id"],
-                        "content": result,
-                    }
-                )
-            continue
 
-        return
-
-    await on_event({"type": "text", "delta": "\n\n[Stopped: max agent steps reached]"})
+    # Do not stop the answer mid-task: ask for a final summary without tools.
+    convo.append(
+        {
+            "role": "system",
+            "content": (
+                "The tool-call limit has been reached. Do not call any more tools. "
+                "Using the work already done, give the user a concise final answer. "
+                "Mention changed files and anything still left to do."
+            ),
+        }
+    )
+    final_content, _ = await _stream_turn(convo, on_event, effort, allow_tools=False)
+    if not final_content:
+        await on_event(
+            {
+                "type": "text",
+                "delta": "\n\n[The tool limit was reached; no final text was returned.]",
+            }
+        )

@@ -2,13 +2,36 @@
   "name": "ai-assistant-deepseek",
   "displayName": "Deepseek AI",
   "description": "Copilot-style inline completions and an agentic chat panel powered by DeepSeek.",
-  "version": "1.0.5",
+  "version": "1.0.7",
   "publisher": "local",
+  "license": "MIT",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/DiogenDev/astra-ai-assistant#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DiogenDev/astra-ai-assistant.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DiogenDev/astra-ai-assistant/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "ai",
+    "assistant",
+    "copilot",
+    "chat",
+    "agent"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "AI",
+    "Programming Languages"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -49,6 +72,10 @@
       {
         "command": "aiAssistant.setupAdvanced",
         "title": "Deepseek: Advanced Settings"
+      },
+      {
+        "command": "aiAssistant.enableFree",
+        "title": "Deepseek: Enable Free DeepSeek"
       }
     ],
     "keybindings": [
@@ -138,12 +165,12 @@
         "aiAssistant.freeDeepseekRoot": {
           "type": "string",
           "default": "",
-          "description": "Folder containing FreeDeepseekAPI (server.js). Empty = %USERPROFILE%\\Documents\\GitHub\\FreeDeepseekAPI."
+          "description": "Free proxy folder. Managed by Deepseek: Enable Free DeepSeek; override only for an external FreeDeepseekAPI copy."
         },
         "aiAssistant.nodePath": {
           "type": "string",
           "default": "node",
-          "description": "Node.js executable used to start the FreeDeepseekAPI proxy."
+          "description": "Legacy Node.js path for an external FreeDeepseekAPI. The bundled free proxy uses VS Code's built-in Node."
         },
         "aiAssistant.provider": {
           "type": "string",
@@ -189,6 +216,13 @@
           "type": "number",
           "default": 1000000,
           "description": "Context window limit in tokens, used by the Context panel."
+        },
+        "aiAssistant.maxAgentSteps": {
+          "type": "number",
+          "default": 16,
+          "minimum": 1,
+          "maximum": 64,
+          "description": "Maximum tool-call rounds before the agent is asked for a final summary without tools."
         },
         "aiAssistant.reasoningEffort": {
           "type": "string",

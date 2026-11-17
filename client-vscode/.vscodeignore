@@ -12,3 +12,4 @@ templates/**
 index.html
 .pytest_cache/**
 test_*.py
+!free-proxy/**

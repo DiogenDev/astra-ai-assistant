@@ -47,7 +47,7 @@ class Settings:
     auth_token: str = os.getenv("AUTH_TOKEN", "").strip()
     host: str = os.getenv("HOST", "127.0.0.1").strip()
     port: int = _int("PORT", 8765)
-    max_agent_steps: int = _int("MAX_AGENT_STEPS", 6)
+    max_agent_steps: int = max(_int("MAX_AGENT_STEPS", 16), 1)
     max_tool_output: int = _int("MAX_TOOL_OUTPUT", 20000)
     context_limit: int = max(_int("CONTEXT_LIMIT", 1000000), 1)
 
