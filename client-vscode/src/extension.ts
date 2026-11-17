@@ -233,14 +233,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 async function startExtension(context: vscode.ExtensionContext): Promise<void> {
-  output = vscode.window.createOutputChannel('AI Assistant');
+  output = vscode.window.createOutputChannel('Deepseek AI');
   context.subscriptions.push(output);
-  output.appendLine('[AI Assistant] activating...');
+  output.appendLine('[Deepseek AI] activating...');
 
   try {
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    statusBar.text = '$(sync~spin) AI';
-    statusBar.tooltip = 'AI Assistant: starting backend...';
+    statusBar.text = '$(sync~spin) DeepSeek';
+    statusBar.tooltip = 'Deepseek AI: starting backend...';
     statusBar.command = 'aiAssistant.openChat';
     statusBar.show();
     context.subscriptions.push(statusBar);
@@ -302,7 +302,7 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
       }
       if (!instruction) {
         void vscode.window.showInformationMessage(
-          'AI Assistant: write a comment like "# ai: your request" and press Enter (or run this command on that line).'
+          'Deepseek AI: write a comment like "# ai: your request" and press Enter (or run this command on that line).'
         );
         return;
       }
@@ -361,7 +361,7 @@ async function startExtension(context: vscode.ExtensionContext): Promise<void> {
     void context.globalState.update('aiAssistant.setupPrompted', true);
     void vscode.window
       .showInformationMessage(
-        'Astra AI Assistant is installed. Set up a model to start.',
+        'Deepseek AI is installed. Set up a model to start.',
         'Set up',
         'Later'
       )
@@ -401,8 +401,8 @@ function safeRegister(
 
 function reportError(label: string, err: unknown): void {
   const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
-  output?.appendLine(`[AI Assistant] ${label} failed: ${message}`);
-  console.error(`[AI Assistant] ${label} failed:`, err);
+  output?.appendLine(`[Deepseek AI] ${label} failed: ${message}`);
+  console.error(`[Deepseek AI] ${label} failed:`, err);
 }
 
 export function deactivate(): void {
@@ -441,11 +441,11 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
   const fileEnv = fs.existsSync(envFile) ? readEnvFile(envFile) : readDotEnv(projectRoot);
   dotenvToken = cfg().get<string>('authToken', '') || fileEnv.AUTH_TOKEN || '';
   if (dotenvToken) {
-    output.appendLine('[AI Assistant] using AUTH_TOKEN from the AI Assistant config');
+    output.appendLine('[Deepseek AI] using AUTH_TOKEN from the Deepseek AI config');
   }
 
   if (await waitForHealth(port, 1)) {
-    output.appendLine(`[AI Assistant] backend already running on port ${port}.`);
+    output.appendLine(`[Deepseek AI] backend already running on port ${port}.`);
     const health = await fetchHealth();
     const backendWorkspace = health?.workspace ?? '';
     if (backendWorkspace && !samePath(backendWorkspace, workspace)) {
@@ -453,9 +453,9 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
         `External backend works on ${backendWorkspace}, but the open VS Code workspace is ${workspace}. ` +
         'File edits will go to the backend workspace. Stop run.bat so the extension starts its own backend, ' +
         'or start it as: run.bat "<workspace path>".';
-      output.appendLine(`[AI Assistant] WARNING: ${warning}`);
+      output.appendLine(`[Deepseek AI] WARNING: ${warning}`);
       void vscode.window
-        .showWarningMessage(`AI Assistant: ${warning}`, 'Open Output')
+        .showWarningMessage(`Deepseek AI: ${warning}`, 'Open Output')
         .then((choice) => {
           if (choice === 'Open Output') {
             output.show();
@@ -468,7 +468,7 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
 
   if (!hasBackend) {
     output.appendLine(
-      `[AI Assistant] backend package not found under ${projectRoot}; waiting for an external backend (run.bat).`
+      `[Deepseek AI] backend package not found under ${projectRoot}; waiting for an external backend (run.bat).`
     );
     if (await waitForHealth(port, 10)) {
       setBackendReady();
@@ -479,7 +479,7 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
   }
 
   if (!cfg().get<boolean>('autoStartBackend', true)) {
-    output.appendLine('[AI Assistant] autoStartBackend disabled; waiting for external backend.');
+    output.appendLine('[Deepseek AI] autoStartBackend disabled; waiting for external backend.');
     if (await waitForHealth(port, 10)) {
       setBackendReady();
     } else {
@@ -509,8 +509,9 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
   env.FREE_PROVIDER = cfg().get<string>('freeProvider', 'freedeepseek');
   env.REASONING_EFFORT = cfg().get<string>('reasoningEffort', 'medium');
   env.CONTEXT_LIMIT = String(cfg().get<number>('contextLimit', 1000000));
+  env.ASSISTANT_NAME = 'deepseek v4.1 flash 1017';
 
-  output.appendLine(`[AI Assistant] starting backend: ${python} -m uvicorn backend.main:app --port ${port}`);
+  output.appendLine(`[Deepseek AI] starting backend: ${python} -m uvicorn backend.main:app --port ${port}`);
   backendProc = cp.spawn(
     python,
     ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(port)],
@@ -525,7 +526,7 @@ async function startBackend(context: vscode.ExtensionContext): Promise<void> {
     setBackendReady();
   } else {
     markBackendError(
-      'backend failed to start. Check aiAssistant.pythonPath and Output -> AI Assistant.'
+      'backend failed to start. Check aiAssistant.pythonPath and Output -> Deepseek AI.'
     );
   }
 }
@@ -569,21 +570,21 @@ async function ensureFreeProxy(): Promise<void> {
     return;
   }
   if (await freeProxyHealthy()) {
-    output.appendLine('[AI Assistant] FreeDeepseekAPI already running.');
+    output.appendLine('[Deepseek AI] FreeDeepseekAPI already running.');
     return;
   }
 
   const root = resolveFreeDeepseekRoot();
   const serverFile = path.join(root, 'server.js');
   if (!fs.existsSync(serverFile)) {
-    output.appendLine(`[AI Assistant] FreeDeepseekAPI not found at ${root}.`);
+    output.appendLine(`[Deepseek AI] FreeDeepseekAPI not found at ${root}.`);
     void vscode.window.showWarningMessage(
       `Free mode needs FreeDeepseekAPI at ${root}. Run start-free-ai.bat first.`
     );
     return;
   }
   if (!fs.existsSync(path.join(root, 'deepseek-auth.json'))) {
-    output.appendLine('[AI Assistant] FreeDeepseekAPI has no DeepSeek login yet.');
+    output.appendLine('[Deepseek AI] FreeDeepseekAPI has no DeepSeek login yet.');
     void vscode.window
       .showWarningMessage(
         'Free mode needs a one-time DeepSeek login. Run start-free-ai.bat and log in to chat.deepseek.com.',
@@ -616,7 +617,7 @@ async function ensureFreeProxy(): Promise<void> {
     stdio: ['ignore', outFd, errFd],
   });
   child.on('error', (error) => {
-    output.appendLine(`[AI Assistant] FreeDeepseekAPI spawn error: ${error.message}`);
+    output.appendLine(`[Deepseek AI] FreeDeepseekAPI spawn error: ${error.message}`);
   });
   child.unref();
   if (typeof outFd === 'number') {
@@ -633,15 +634,15 @@ async function ensureFreeProxy(): Promise<void> {
       // ignore
     }
   }
-  output.appendLine(`[AI Assistant] starting FreeDeepseekAPI from ${root} (pid ${child.pid ?? '?'})`);
+  output.appendLine(`[Deepseek AI] starting FreeDeepseekAPI from ${root} (pid ${child.pid ?? '?'})`);
 
   // Do not block extension activation while the proxy boots.
   void waitForFreeProxy(30).then((ready) => {
     if (ready) {
-      output.appendLine('[AI Assistant] FreeDeepseekAPI is ready.');
+      output.appendLine('[Deepseek AI] FreeDeepseekAPI is ready.');
       return;
     }
-    output.appendLine('[AI Assistant] FreeDeepseekAPI did not become ready.');
+    output.appendLine('[Deepseek AI] FreeDeepseekAPI did not become ready.');
     void vscode.window.showWarningMessage(
       'FreeDeepseekAPI did not start. Check proxy.err.log in its folder.'
     );
@@ -650,13 +651,13 @@ async function ensureFreeProxy(): Promise<void> {
 
 function markRestricted(): void {
   if (statusBar) {
-    statusBar.text = '$(lock) AI';
-    statusBar.tooltip = 'AI Assistant: workspace is in Restricted Mode';
+    statusBar.text = '$(lock) DeepSeek';
+    statusBar.tooltip = 'Deepseek AI: workspace is in Restricted Mode';
   }
-  output.appendLine('[AI Assistant] workspace is not trusted; backend not started.');
+  output.appendLine('[Deepseek AI] workspace is not trusted; backend not started.');
   void vscode.window
     .showWarningMessage(
-      'AI Assistant is in Restricted Mode. Trust this workspace to enable the agent.',
+      'Deepseek AI is in Restricted Mode. Trust this workspace to enable the agent.',
       'Manage Trust'
     )
     .then((choice) => {
@@ -668,19 +669,19 @@ function markRestricted(): void {
 
 function markBackendError(message: string): void {
   if (statusBar) {
-    statusBar.text = '$(warning) AI';
-    statusBar.tooltip = `AI Assistant: ${message}`;
+    statusBar.text = '$(warning) DeepSeek';
+    statusBar.tooltip = `Deepseek AI: ${message}`;
   }
-  output.appendLine(`[AI Assistant] ${message}`);
-  void vscode.window.showWarningMessage(`AI Assistant: ${message}`);
+  output.appendLine(`[Deepseek AI] ${message}`);
+  void vscode.window.showWarningMessage(`Deepseek AI: ${message}`);
 }
 
 function setBackendReady(): void {
   if (statusBar) {
-    statusBar.text = '$(sparkle) AI';
-    statusBar.tooltip = 'AI Assistant: ready. Click to open chat.';
+    statusBar.text = '$(sparkle) DeepSeek';
+    statusBar.tooltip = 'Deepseek AI: ready. Click to open chat.';
   }
-  output?.appendLine('[AI Assistant] backend is ready');
+  output?.appendLine('[Deepseek AI] backend is ready');
 }
 
 function stopBackend(): void {
@@ -1184,7 +1185,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'error':
-            output?.appendLine(`[AI Assistant] chat error: ${event.message}`);
+            output?.appendLine(`[Deepseek AI] chat error: ${event.message}`);
             this.post({ type: 'error', text: event.message });
             break;
           case 'done':
@@ -1203,7 +1204,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         }
         const hint = /ECONNREFUSED|connect/i.test(err.message)
-          ? ' Backend is not running. See Output -> AI Assistant.'
+          ? ' Backend is not running. See Output -> Deepseek AI.'
           : '';
         this.post({ type: 'error', text: err.message + hint });
       }
@@ -1305,7 +1306,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="stylesheet" href="${css}" />
-<title>AI Assistant</title>
+<title>Deepseek AI</title>
 </head>
 <body>
   <header id="topbar" class="topbar">
@@ -1314,7 +1315,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H9l-3.5 2.5V12A2 2 0 0 1 4 10z"/><path d="M16.5 8H18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-.5v2.5L14 16h-2"/></svg></span>
       </button>
       <div class="title-block">
-        <span id="brand" class="brand">GPT 6 Astra</span>
+        <span id="brand" class="brand">deepseek v4.1 flash 1017</span>
         <span id="chat-title" class="chat-title">New chat</span>
       </div>
       <div class="topbar-actions">
@@ -1337,8 +1338,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     <div class="topbar-row controls">
       <select id="provider" aria-label="Model provider" title="Model">
         <option value="auto">Auto</option>
-        <option value="deepseek">GPT 6 Astra</option>
-        <option value="free">GPT 5.6 Terra</option>
+        <option value="deepseek">deepseek v4.1 flash 1017</option>
+        <option value="free">deepseek free</option>
       </select>
       <select id="reasoning" aria-label="Reasoning effort" title="Reasoning effort">
         <option value="auto">auto</option>
@@ -1354,7 +1355,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     <div id="empty" class="empty" aria-hidden="true">
       <div class="empty-icon"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H9l-3.5 2.5V12A2 2 0 0 1 4 10z"/><path d="M16.5 8H18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-.5v2.5L14 16h-2"/></svg></span></div>
       <h2>Ask about your code</h2>
-      <p>Select code in the editor, then ask GPT 6 Astra to explain, fix, or build.</p>
+      <p>Select code in the editor, then ask deepseek v4.1 flash 1017 to explain, fix, or build.</p>
     </div>
     <div id="messages" class="messages" role="log" aria-live="polite" aria-label="Conversation"></div>
   </main>
@@ -1541,7 +1542,7 @@ async function autoApplyWorkspaceFiles(
       if (existed) {
         result.overwrote.push(rawPath);
       }
-      output?.appendLine(`[AI Assistant] auto-applied file: ${target}`);
+      output?.appendLine(`[Deepseek AI] auto-applied file: ${target}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       result.errors.push(`${rawPath}: ${message}`);
@@ -1576,14 +1577,14 @@ async function applyWorkspaceFile(rawPath: string, content: string): Promise<boo
   }
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
-    void vscode.window.showWarningMessage('AI Assistant: open a folder to create files.');
+    void vscode.window.showWarningMessage('Deepseek AI: open a folder to create files.');
     return false;
   }
 
   const target = resolveWorkspaceTarget(rawPath, [folder.uri.fsPath]);
   if (!target) {
     void vscode.window.showWarningMessage(
-      `AI Assistant: refusing to write outside the workspace: ${rawPath}`
+      `Deepseek AI: refusing to write outside the workspace: ${rawPath}`
     );
     return false;
   }
@@ -1601,7 +1602,7 @@ async function applyWorkspaceFile(rawPath: string, content: string): Promise<boo
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, content, 'utf8');
-    output?.appendLine(`[AI Assistant] applied file: ${target}`);
+    output?.appendLine(`[Deepseek AI] applied file: ${target}`);
     if (cfg().get<boolean>('openCreatedFiles', true)) {
       try {
         const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
@@ -1620,8 +1621,8 @@ async function applyWorkspaceFile(rawPath: string, content: string): Promise<boo
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    output?.appendLine(`[AI Assistant] apply file failed: ${message}`);
-    void vscode.window.showErrorMessage(`AI Assistant: cannot write ${rawPath}: ${message}`);
+    output?.appendLine(`[Deepseek AI] apply file failed: ${message}`);
+    void vscode.window.showErrorMessage(`Deepseek AI: cannot write ${rawPath}: ${message}`);
     return false;
   }
 }
@@ -1677,7 +1678,7 @@ async function openWorkspaceFile(rawPath: string, absPath?: string): Promise<voi
   }
 
   void vscode.window.showWarningMessage(
-    `AI Assistant: cannot find ${rawPath}. Checked: ${candidates.join(' | ')}`
+    `Deepseek AI: cannot find ${rawPath}. Checked: ${candidates.join(' | ')}`
   );
 }
 
@@ -1687,7 +1688,7 @@ async function insertIntoEditor(text: string): Promise<boolean> {
   }
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
-    void vscode.window.showWarningMessage('AI Assistant: open a file to insert the answer.');
+    void vscode.window.showWarningMessage('Deepseek AI: open a file to insert the answer.');
     return false;
   }
   return editor.edit((builder) => builder.replace(editor.selection, text));
@@ -1698,7 +1699,7 @@ async function ensureBackendDependencies(context: vscode.ExtensionContext): Prom
   const requirements = path.join(root, 'requirements.txt');
   if (!fs.existsSync(requirements)) {
     void vscode.window.showWarningMessage(
-      `AI Assistant: requirements.txt not found in ${root}.`
+      `Deepseek AI: requirements.txt not found in ${root}.`
     );
     return false;
   }
@@ -1716,7 +1717,7 @@ async function ensureBackendDependencies(context: vscode.ExtensionContext): Prom
     return true;
   }
   const choice = await vscode.window.showInformationMessage(
-    'Astra needs Python backend dependencies. Install them now?',
+    'Deepseek AI needs Python backend dependencies. Install them now?',
     'Install',
     'Cancel'
   );
@@ -1726,7 +1727,7 @@ async function ensureBackendDependencies(context: vscode.ExtensionContext): Prom
   const installed = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: 'Installing Astra backend dependencies...',
+      title: 'Installing Deepseek AI backend dependencies...',
     },
     () =>
       new Promise<boolean>((resolve) => {
@@ -1738,7 +1739,7 @@ async function ensureBackendDependencies(context: vscode.ExtensionContext): Prom
         child.stdout?.on('data', (data: Buffer) => output.append(data.toString()));
         child.stderr?.on('data', (data: Buffer) => output.append(data.toString()));
         child.on('error', (err) => {
-          output.appendLine(`[AI Assistant] pip error: ${err.message}`);
+          output.appendLine(`[Deepseek AI] pip error: ${err.message}`);
           resolve(false);
         });
         child.on('exit', (code) => resolve(code === 0));
@@ -1746,7 +1747,7 @@ async function ensureBackendDependencies(context: vscode.ExtensionContext): Prom
   );
   if (!installed) {
     void vscode.window.showErrorMessage(
-      'AI Assistant: dependency installation failed. See Output -> AI Assistant.'
+      'Deepseek AI: dependency installation failed. See Output -> Deepseek AI.'
     );
     return false;
   }
@@ -1757,18 +1758,18 @@ async function runQuickSetup(context: vscode.ExtensionContext): Promise<void> {
   const choice = await vscode.window.showQuickPick(
     [
       {
-        label: 'DeepSeek (GPT 6 Astra)',
+        label: 'DeepSeek (deepseek v4.1 flash 1017)',
         description: 'Enter a DeepSeek API key',
         value: 'deepseek',
       },
       {
-        label: 'Free (GPT 5.6 Terra)',
+        label: 'Free (deepseek free)',
         description: 'No DeepSeek key; use a free provider',
         value: 'free',
       },
       { label: 'Advanced setup...', description: 'All options', value: 'advanced' },
     ],
-    { title: 'Astra: quick setup', placeHolder: 'Choose how to power the assistant' }
+    { title: 'Deepseek AI: quick setup', placeHolder: 'Choose how to power the assistant' }
   );
   if (!choice) {
     return;
@@ -1861,13 +1862,13 @@ async function runQuickSetup(context: vscode.ExtensionContext): Promise<void> {
     FREE_API_KEY: freeKey,
     REASONING_EFFORT: effort,
     CONTEXT_LIMIT: String(limit),
-    ASSISTANT_NAME: 'GPT 6 Astra',
+    ASSISTANT_NAME: 'deepseek v4.1 flash 1017',
     AUTH_TOKEN: authToken,
     HOST: '127.0.0.1',
     PORT: String(current.get('port', 8765)),
   });
 
-  void vscode.window.showInformationMessage('Astra is ready. Starting the backend...');
+  void vscode.window.showInformationMessage('Deepseek AI is ready. Starting the backend...');
   stopBackend();
   try {
     await startBackend(context);
@@ -1882,13 +1883,13 @@ function installBackendDependencies(context: vscode.ExtensionContext): void {
   const requirements = path.join(root, 'requirements.txt');
   if (!fs.existsSync(requirements)) {
     void vscode.window.showWarningMessage(
-      `AI Assistant: requirements.txt not found in ${root}.`
+      `Deepseek AI: requirements.txt not found in ${root}.`
     );
     return;
   }
   const python = cfg().get<string>('pythonPath', 'python');
   const terminal = vscode.window.createTerminal({
-    name: 'AI Assistant: backend dependencies',
+    name: 'Deepseek AI: backend dependencies',
   });
   terminal.show();
   terminal.sendText(`"${python}" -m pip install -r "${requirements}"`);
@@ -1902,16 +1903,16 @@ async function runSetupWizard(context: vscode.ExtensionContext): Promise<void> {
   const providerPick = await vscode.window.showQuickPick(
     [
       { label: 'Auto', description: 'DeepSeek if a key is set, otherwise free', value: 'auto' },
-      { label: 'GPT 6 Astra', description: 'DeepSeek persona with tools and file editing', value: 'deepseek' },
-      { label: 'GPT 5.6 Terra', description: 'Free provider with no conversation memory', value: 'free' },
+      { label: 'deepseek v4.1 flash 1017', description: 'DeepSeek persona with tools and file editing', value: 'deepseek' },
+      { label: 'deepseek free', description: 'Free provider with no conversation memory', value: 'free' },
     ],
-    { title: 'AI Assistant: provider', placeHolder: `Current: ${current.get('provider', 'auto')}` }
+    { title: 'Deepseek AI: provider', placeHolder: `Current: ${current.get('provider', 'auto')}` }
   );
   if (!providerPick) {
     return;
   }
   const model = await vscode.window.showQuickPick(['deepseek-flash', 'deepseek-v4-pro'], {
-    title: 'AI Assistant: DeepSeek model',
+    title: 'Deepseek AI: DeepSeek model',
     placeHolder: `Current: ${current.get('model', 'deepseek-flash')}`,
   });
   if (!model) {
@@ -1929,7 +1930,7 @@ async function runSetupWizard(context: vscode.ExtensionContext): Promise<void> {
       'openai',
     ],
     {
-      title: 'AI Assistant: free provider',
+      title: 'Deepseek AI: free provider',
       placeHolder: `Current: ${current.get('freeProvider', 'freedeepseek')}`,
     }
   );
@@ -1937,7 +1938,7 @@ async function runSetupWizard(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
   const effort = await vscode.window.showQuickPick(['auto', 'none', 'low', 'medium', 'high'], {
-    title: 'AI Assistant: reasoning level',
+    title: 'Deepseek AI: reasoning level',
     placeHolder: `Current: ${current.get('reasoningEffort', 'medium')}`,
   });
   if (!effort) {
@@ -2037,14 +2038,14 @@ async function runSetupWizard(context: vscode.ExtensionContext): Promise<void> {
     FREE_API_KEY: effectiveFreeKey,
     REASONING_EFFORT: effort,
     CONTEXT_LIMIT: String(limit),
-    ASSISTANT_NAME: 'GPT 6 Astra',
+    ASSISTANT_NAME: 'deepseek v4.1 flash 1017',
     AUTH_TOKEN: effectiveAuth,
     HOST: '127.0.0.1',
     PORT: String(current.get('port', 8765)),
   });
 
   void vscode.window.showInformationMessage(
-    'AI Assistant settings saved. Restarting the local backend...'
+    'Deepseek AI settings saved. Restarting the local backend...'
   );
   stopBackend();
   try {
@@ -2081,7 +2082,7 @@ async function runInlineRequest(
   cancelInlineTimer();
   if (vscode.workspace.isTrusted === false) {
     void vscode.window.showWarningMessage(
-      'AI Assistant: inline requests are disabled in Restricted Mode.'
+      'Deepseek AI: inline requests are disabled in Restricted Mode.'
     );
     return;
   }
@@ -2106,7 +2107,7 @@ async function runInlineRequest(
     const response = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: 'GPT 6 Astra: inline edit...',
+        title: 'deepseek v4.1 flash 1017: inline edit...',
       },
       () => httpJson('POST', new URL('/inline', base).toString(), payload, authToken(), 180000)
     );
@@ -2129,7 +2130,7 @@ async function runInlineRequest(
       throw new Error('the model returned a suspiciously short file; edit rejected');
     }
     if (next === originalText) {
-      void vscode.window.showInformationMessage('GPT 6 Astra: no changes were needed.');
+      void vscode.window.showInformationMessage('deepseek v4.1 flash 1017: no changes were needed.');
       return;
     }
 
@@ -2143,10 +2144,10 @@ async function runInlineRequest(
       throw new Error('could not apply the edit');
     }
     output?.appendLine(
-      `[AI Assistant] inline request applied: ${document.uri.fsPath}:${lineNumber + 1}`
+      `[Deepseek AI] inline request applied: ${document.uri.fsPath}:${lineNumber + 1}`
     );
     void vscode.window
-      .showInformationMessage('GPT 6 Astra applied the inline edit.', 'Undo')
+      .showInformationMessage('deepseek v4.1 flash 1017 applied the inline edit.', 'Undo')
       .then((choice) => {
         if (choice === 'Undo') {
           void vscode.commands.executeCommand('undo');
@@ -2154,8 +2155,8 @@ async function runInlineRequest(
       });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    output?.appendLine(`[AI Assistant] inline request failed: ${message}`);
-    void vscode.window.showErrorMessage(`GPT 6 Astra inline request failed: ${message}`);
+    output?.appendLine(`[Deepseek AI] inline request failed: ${message}`);
+    void vscode.window.showErrorMessage(`deepseek v4.1 flash 1017 inline request failed: ${message}`);
   } finally {
     cancelInlineTimer();
     inlineBusy = false;

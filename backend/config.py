@@ -31,7 +31,7 @@ class Settings:
     api_key: str = os.getenv("DEEPSEEK_API_KEY", "").strip()
     base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-flash").strip()
-    assistant_name: str = os.getenv("ASSISTANT_NAME", "GPT 6 Astra").strip() or "GPT 6 Astra"
+    assistant_name: str = os.getenv("ASSISTANT_NAME", "deepseek v4.1 flash 1017").strip() or "deepseek v4.1 flash 1017"
     reasoning_effort: str = os.getenv("REASONING_EFFORT", "medium").strip().lower() or "medium"
     provider: str = os.getenv("PROVIDER", "auto").strip().lower() or "auto"
     free_provider: str = os.getenv("FREE_PROVIDER", "freedeepseek").strip().lower() or "freedeepseek"

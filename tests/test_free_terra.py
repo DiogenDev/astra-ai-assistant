@@ -20,7 +20,7 @@ from backend.main import app  # noqa: E402
 
 def test_free_prompt_identity_and_reasoning():
     prompt = free_system_prompt("high")
-    assert "GPT 5.6 Terra" in prompt
+    assert "deepseek free" in prompt
     assert "Reasoning level: high" in prompt
     assert "file=src/app.py" in prompt
     assert "Files:" in prompt

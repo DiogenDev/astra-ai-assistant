@@ -1,4 +1,4 @@
-# Astra AI Assistant (DeepSeek + VS Code)
+# Deepseek AI (DeepSeek + VS Code)
 
 A minimal AI coding assistant: Copilot-style inline completions, a chat panel, and an
 agent that can read, search, create and edit files in the workspace.
@@ -49,7 +49,7 @@ Edit `ai-assistant/.env`:
 DEEPSEEK_API_KEY=sk-...
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-flash
-ASSISTANT_NAME=GPT 6 Astra
+ASSISTANT_NAME=deepseek v4.1 flash 1017
 AUTH_TOKEN=
 HOST=127.0.0.1
 PORT=8765
@@ -166,7 +166,7 @@ Notes:
 
 - **Chats drawer** (top-left): create, rename, delete and switch conversations.
   Chats and their messages persist across webview reloads.
-- **Per-chat model**: every chat remembers Auto / GPT 6 Astra / GPT 5.6 Terra and
+- **Per-chat model**: every chat remembers Auto / deepseek v4.1 flash 1017 / deepseek free and
   its reasoning level; switching conversations restores them.
 - **Tokens / Context** buttons: separate panels for cumulative tokens/cache/cost/
   requests and last-request context vs `CONTEXT_LIMIT`.
@@ -180,7 +180,7 @@ Notes:
 ## Features
 
 - **Inline completion** — ghost text on typing (`aiAssistant.enableInline`).
-- **Chat panel** — activity bar -> AI Assistant.
+- **Chat panel** — activity bar -> Deepseek AI.
 - **Explain / Fix selection** — command palette, sends the selection to the chat.
 - **Agent tools** — `read_file`, `write_file`, `list_dir`, `search` (function calling).
 
@@ -212,7 +212,7 @@ code, editing the current file in place (including unsaved changes). Press
 Pick the model in the chat header dropdown:
 
 - **Auto** — DeepSeek if a key is set, otherwise Free.
-- **GPT 6 Astra** — DeepSeek persona with tools and file editing.
+- **deepseek v4.1 flash 1017** — DeepSeek persona with tools and file editing.
 - **Free** — plain free model, no persona memory.
 
 The dropdown writes `aiAssistant.provider`; it can also be set in `.env` as `PROVIDER`:
@@ -287,9 +287,9 @@ OLLAMA_MODEL=qwen2.5-coder:1.5b
 GitHub Models was **retired on 2026-07-30**, so it is not an option. The
 extension never scrapes Google; `google` mode only opens the official page.
 
-### GPT 5.6 Terra (free chat)
+### deepseek free (free chat)
 
-The free chat identifies itself as **GPT 5.6 Terra** and honors the reasoning
+The free chat identifies itself as **deepseek free** and honors the reasoning
 dropdown:
 
 - `none` / `low` / `medium` → `deepseek-chat` (fast, no thinking)
@@ -351,7 +351,7 @@ and `tsc` for the extension.
 The chat header shows live usage across all API calls (chat + inline completions):
 
 ```
-GPT 6 Astra
+deepseek v4.1 flash 1017
 in 12.3k · out 4.1k · cache 8.0k · $0.0042 · 17 req · off-peak
 ```
 

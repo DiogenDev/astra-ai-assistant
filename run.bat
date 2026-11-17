@@ -32,7 +32,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [OK] GPT 6 Astra backend -^> http://%HOST%:%PORT%
+echo [OK] deepseek v4.1 flash 1017 backend -^> http://%HOST%:%PORT%
 echo      Health: http://%HOST%:%PORT%/health
 echo      Workspace: %WORKSPACE_ROOT%
 echo      Press Ctrl+C to stop.

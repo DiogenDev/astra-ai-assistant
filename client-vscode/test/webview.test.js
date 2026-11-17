@@ -10,7 +10,7 @@ const CHAT_JS = fs.readFileSync(path.join(ROOT, 'media', 'chat.js'), 'utf8');
 const HTML = `<!DOCTYPE html><html><body>
 <div id="topbar">
   <button id="chats-toggle" aria-expanded="false"></button>
-  <span id="brand">GPT 6 Astra</span>
+  <span id="brand">deepseek v4.1 flash 1017</span>
   <span id="chat-title">New chat</span>
   <button id="tokens-btn" aria-expanded="false"></button>
   <button id="context-btn" aria-expanded="false"></button>
@@ -18,8 +18,8 @@ const HTML = `<!DOCTYPE html><html><body>
   <button id="newchat"></button>
   <select id="provider">
     <option value="auto">Auto</option>
-    <option value="deepseek">GPT 6 Astra</option>
-    <option value="free">GPT 5.6 Terra</option>
+    <option value="deepseek">deepseek v4.1 flash 1017</option>
+    <option value="free">deepseek free</option>
   </select>
   <select id="reasoning">
     <option value="auto">auto</option><option value="none">none</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
@@ -561,7 +561,7 @@ test('settings message restores provider and reasoning', () => {
 
   assert.equal(doc.getElementById('provider').value, 'free');
   assert.equal(doc.getElementById('reasoning').value, 'low');
-  assert.equal(doc.getElementById('brand').textContent, 'GPT 5.6 Terra');
+  assert.equal(doc.getElementById('brand').textContent, 'deepseek free');
 });
 
 test('settings button opens the setup wizard', () => {

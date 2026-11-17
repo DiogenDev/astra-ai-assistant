@@ -112,7 +112,7 @@ def update_vscode_settings(values: dict[str, str]) -> None:
 
 def configure() -> None:
     current = load_current()
-    print("\n--- Configure Astra AI ---")
+    print("\n--- Configure Deepseek AI ---")
     print("Press Enter to keep the current value.\n")
 
     deepseek_key = ask_secret("DeepSeek API key", current.get("DEEPSEEK_API_KEY", ""))
@@ -137,7 +137,7 @@ def configure() -> None:
         "FREE_API_KEY": free_key,
         "REASONING_EFFORT": effort,
         "CONTEXT_LIMIT": limit,
-        "ASSISTANT_NAME": "GPT 6 Astra",
+        "ASSISTANT_NAME": "deepseek v4.1 flash 1017",
         "AUTH_TOKEN": auth,
         "HOST": "127.0.0.1",
         "PORT": "8765",
@@ -229,7 +229,7 @@ def menu() -> None:
         print(
             """
 ========================================
-  Astra AI - setup
+  Deepseek AI - setup
 ========================================
   1. Configure keys, models and providers
   2. Install Python dependencies

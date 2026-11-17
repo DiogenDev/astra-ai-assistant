@@ -9,7 +9,7 @@ from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitEr
 from .config import settings
 from .effort import resolve_effort
 
-FREE_IDENTITY = "GPT 5.6 Terra"
+FREE_IDENTITY = "deepseek free"
 
 _PRESETS: dict[str, dict[str, object]] = {
     "gemini": {

@@ -327,7 +327,7 @@
 
     function applyProviderLabel(value) {
       if (brandEl) {
-        brandEl.textContent = value === 'free' ? 'GPT 5.6 Terra' : 'GPT 6 Astra';
+        brandEl.textContent = value === 'free' ? 'deepseek free' : 'deepseek v4.1 flash 1017';
       }
     }
 
