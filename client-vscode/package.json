@@ -2,7 +2,7 @@
   "name": "ai-assistant-deepseek",
   "displayName": "Deepseek AI",
   "description": "Copilot-style inline completions and an agentic chat panel powered by DeepSeek.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"

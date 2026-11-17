@@ -340,6 +340,43 @@ test('multiple fenced file blocks keep CSS comments and JS template literals int
   assert.match(doc.getElementById('messages').textContent, /Готово/);
 });
 
+test('unfenced directory trees keep their layout in a code block', async () => {
+  const { doc, send } = createWebview();
+  const text = [
+    '# АвтоТех Краснодар — лендинг СТО',
+    '',
+    'Статичный одностраничный сайт.',
+    '',
+    '## Структура',
+    '',
+    'landing/',
+    '├── index.html        # разметка страницы',
+    '├── css/',
+    '│   └── style.css     # стили',
+    '├── js/',
+    '│   └── script.js     # логика',
+    '└── README.md',
+    '',
+    'Готово.',
+  ].join('\n');
+  send({ type: 'delta', text });
+  send({ type: 'done', stats: {} });
+  await tick();
+
+  const codes = Array.from(doc.querySelectorAll('.msg.assistant pre code'));
+  const tree = codes.find((code) => code.textContent.indexOf('├── index.html') >= 0);
+  assert.ok(tree);
+  assert.match(tree.textContent, /^landing\/\n├── index\.html/);
+  assert.match(tree.textContent, /├── css\/\n│   └── style\.css/);
+  assert.match(tree.textContent, /└── README\.md$/);
+  const prose = Array.from(doc.querySelectorAll('.msg.assistant .md-p'))
+    .map((node) => node.textContent)
+    .join('\n');
+  assert.match(prose, /Статичный одностраничный сайт\./);
+  assert.match(prose, /Готово\./);
+  assert.equal(prose.indexOf('├──'), -1);
+});
+
 test('unfenced CSS, JS and SVG blocks render as pre/code without losing characters', async () => {
   const { doc, posted, send } = createWebview();
   const text = [

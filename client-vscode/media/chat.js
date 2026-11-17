@@ -338,6 +338,8 @@
     const CSS_DECL_RE = /^[a-z-]+\s*:\s*[^;{}]*[;{}]\s*$/;
     const MARKUP_START_RE =
       /^(?:<!--|<!DOCTYPE\b|<\?xml\b|<\/?[a-zA-Z][\w:-]*(?:\s|>|\/|$))/i;
+    const TREE_ROOT_RE = /^[\p{L}\p{N}_.@+~-]+(?:\/[\p{L}\p{N}_.@+~-]+)*\/$/u;
+    const TREE_CONNECTOR_RE = /^\s*[│├└┌┐┘┬┴┼]/;
 
     function matchFence(line) {
       const match = FENCE_RE.exec(String(line || ''));
@@ -435,6 +437,33 @@
       }
       const trimmed = raw.trim();
       return /[{}();=<>`]/.test(trimmed) || /[,:(]$/.test(trimmed);
+    }
+
+    function readUnfencedTree(lines, startIndex) {
+      let index = startIndex;
+      let hasRoot = false;
+      if (TREE_ROOT_RE.test(String(lines[index] || '').trim())) {
+        hasRoot = true;
+        index += 1;
+      }
+      const treeLines = [];
+      let connectors = 0;
+      while (index < lines.length) {
+        const raw = lines[index];
+        if (!raw.trim() || !TREE_CONNECTOR_RE.test(raw)) {
+          break;
+        }
+        connectors += 1;
+        treeLines.push(raw);
+        index += 1;
+      }
+      if (connectors < 2) {
+        return null;
+      }
+      if (hasRoot) {
+        treeLines.unshift(lines[startIndex]);
+      }
+      return { lines: treeLines, nextIndex: index };
     }
 
     function renderInline(parent, text) {
@@ -641,6 +670,14 @@
           renderInline(node, quote[1]);
           container.appendChild(node);
           index += 1;
+          continue;
+        }
+
+        const tree = readUnfencedTree(lines, index);
+        if (tree) {
+          closeList();
+          appendCodeBlock(tree.lines, '', '');
+          index = tree.nextIndex;
           continue;
         }
 
